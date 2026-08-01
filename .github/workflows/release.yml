@@ -55,7 +55,7 @@ jobs:
         run: |
           python scripts/build.py --target_dir build/casual-preloader <<< "y"
           find build -name '__pycache__' -exec rm -rf '{}' \; -prune
-          cp scripts/RUNME.bat build/
+          cp scripts/RUNME.bat scripts/RUNME.vbs build/
 
       - name: Create release archive
         run: cd build && zip -r "../casual-preloader-${{ github.ref_name }}.zip" .

@@ -83,13 +83,14 @@ def main():
     target_dir.mkdir(exist_ok=True, parents=True)
     copy_project_files(source_dir, target_dir)
 
-    runme_source = Path(source_dir) / "scripts" / "RUNME.bat"
-    if runme_source.exists():
-        runme_target = target_dir.parent / "RUNME.bat"
-        log.info(f"Copying RUNME.bat to {runme_target}")
-        shutil.copy2(runme_source, runme_target)
-    else:
-        log.warning("RUNME.bat not found")
+    for launcher_name in ("RUNME.bat", "RUNME.vbs"):
+        launcher_source = Path(source_dir) / "scripts" / launcher_name
+        if launcher_source.exists():
+            launcher_target = target_dir.parent / launcher_name
+            log.info(f"Copying {launcher_name} to {launcher_target}")
+            shutil.copy2(launcher_source, launcher_target)
+        else:
+            log.warning(f"{launcher_name} not found")
 
     log.info(f"Build completed successfully to {target_dir}")
     log.info('feathers wuz here')
