@@ -2,7 +2,7 @@ import logging
 import re
 import shutil
 from collections.abc import Mapping
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from valve_parsers import VPKFile
 
@@ -182,17 +182,24 @@ def update_script_files(script_files: list[str], path_mappings: list[tuple[str, 
 
 
 def create_vpk_based_mappings(sound_files: list[Path], vpk_paths: list[Path]) -> list[dict]:
-    # create mappings between mod sound files and their VPK paths
-    vpk_files = []
+    # Index the sound paths once. Calling VPKFile.find_file_path for every mod
+    # sound scans the archive directory again for each file, which becomes very
+    # expensive for large sound packs.
+    canonical_path_by_filename = {}
     for vpk_path in vpk_paths:
         try:
             vpk = VPKFile(vpk_path)
-            vpk_files.append(vpk)
+            for extension in ('wav', 'mp3'):
+                for archive_path in vpk.list_files(extension=extension):
+                    filename = PurePosixPath(archive_path.replace('\\', '/')).name
+                    # Preserve the original VPK priority and the first path a
+                    # VPK would return for duplicate basenames.
+                    canonical_path_by_filename.setdefault(filename, archive_path)
         except Exception:
             log.exception(f"Error loading {vpk_path}")
             continue
 
-    if not vpk_files:
+    if not canonical_path_by_filename:
         log.error("No valid VPK files could be loaded", stack_info=True)
         return []
 
@@ -202,14 +209,8 @@ def create_vpk_based_mappings(sound_files: list[Path], vpk_paths: list[Path]) ->
 
     for sound_file in sound_files:
         filename = sound_file.name
-        canonical_path = None
-
-        # search all VPK files for this filename
-        for vpk in vpk_files:
-            vpk_file_path = vpk.find_file_path(filename)
-            if vpk_file_path:
-                canonical_path = vpk_file_path[6:]  # remove 'sound/' prefix
-                break
+        vpk_file_path = canonical_path_by_filename.get(filename)
+        canonical_path = vpk_file_path[6:] if vpk_file_path else None  # remove 'sound/' prefix
 
         if canonical_path:
             # determine final placement path
