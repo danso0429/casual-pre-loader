@@ -249,6 +249,10 @@ class FirstTimeSetupDialog(QDialog):
                     found.append("app_settings.json")
                 if (userdata_path / 'config' / 'addon_metadata.json').is_file():
                     found.append("addon_metadata.json")
+                if (userdata_path / 'config' / 'install_state.json').is_file():
+                    found.append("install_state.json")
+                if (userdata_path / 'data' / 'game_backups').is_dir():
+                    found.append("verified game backups")
 
                 if found:
                     status_parts.append("Will import: " + ", ".join(found))

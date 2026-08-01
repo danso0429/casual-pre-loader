@@ -57,10 +57,16 @@ def import_userdata(userdata_path: Path) -> tuple[bool, list[str]]:
         if not src.exists():
             if src not in optional_sources:
                 warnings.append(f"Not present in source: {src.name}")
+            else:
+                log.info(
+                    "Optional userdata item not present item=%s",
+                    src.name,
+                )
             continue
         try:
             delete(dst, not_exist_ok=True)
             copy(src, dst)
+            log.info("Imported userdata item=%s", src.name)
         except Exception as e:
             log.exception(f"Failed to import {src}")
             warnings.append(f"Failed to import {src.name}: {e}")

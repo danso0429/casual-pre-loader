@@ -1,3 +1,4 @@
+import logging
 from types import SimpleNamespace
 
 from core.services import setup
@@ -6,7 +7,9 @@ from core.services import setup
 def test_userdata_import_preserves_install_state_and_verified_game_backups(
     tmp_path,
     monkeypatch,
+    caplog,
 ):
+    caplog.set_level(logging.INFO)
     source_userdata = tmp_path / "old" / "userdata"
     source_data = source_userdata / "data"
     source_config = source_userdata / "config"
@@ -46,9 +49,16 @@ def test_userdata_import_preserves_install_state_and_verified_game_backups(
         "Not present in source: app_settings.json",
         "Not present in source: addon_metadata.json",
     ]
+    assert "Imported userdata item=install_state.json" in caplog.text
+    assert "Imported userdata item=game_backups" in caplog.text
 
 
-def test_userdata_import_treats_new_state_files_as_optional(tmp_path, monkeypatch):
+def test_userdata_import_treats_new_state_files_as_optional(
+    tmp_path,
+    monkeypatch,
+    caplog,
+):
+    caplog.set_level(logging.INFO)
     source_userdata = tmp_path / "old" / "userdata"
     source_data = source_userdata / "data"
     source_config = source_userdata / "config"
@@ -75,3 +85,5 @@ def test_userdata_import_treats_new_state_files_as_optional(tmp_path, monkeypatc
     assert success
     assert "Not present in source: game_backups" not in warnings
     assert "Not present in source: install_state.json" not in warnings
+    assert "Optional userdata item not present item=game_backups" in caplog.text
+    assert "Optional userdata item not present item=install_state.json" in caplog.text
