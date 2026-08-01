@@ -82,6 +82,8 @@ class FolderConfig:
     """File where main settings are kept"""
     addon_metadata_file: Path | Dep[Path] = Dep(lambda settings_dir: settings_dir / 'addon_metadata.json')
     """File where addon metadata is kept"""
+    install_state_file:  Path | Dep[Path] = Dep(lambda settings_dir: settings_dir / 'install_state.json')
+    """File that records the last successful install, used to skip unchanged installs"""
 
     temp_to_be_processed_dir:  Path | Dep[Path] = Dep(lambda temp_dir: temp_dir / 'to_be_processed')
     """Temp location for particle elements extracted during a mod install, cleared once completed"""

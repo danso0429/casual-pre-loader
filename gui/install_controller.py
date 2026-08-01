@@ -41,7 +41,7 @@ class InstallController(QObject):
     def _on_progress(self, progress: int, message: str):
         self.progress_update.emit(progress, message)
 
-    def _run_install(self, install_path: Path, selected_addons, mod_drop_zone, sourcemod: Sourcemods = Sourcemods.DEFAULT):
+    def _run_install(self, install_path: Path, selected_addons, particle_selections, sourcemod: Sourcemods = Sourcemods.DEFAULT):
         try:
             disable_paint_colors = False
             show_console = True
@@ -53,22 +53,22 @@ class InstallController(QObject):
                 fix_mdl_paths = self.settings.fix_mdl_paths
                 skip_quickprecache = self.settings.skip_quickprecache
 
-            apply_particles = None
-            if mod_drop_zone:
-                apply_particles = mod_drop_zone.apply_particle_selections
-
-            self.service.install(
+            installed = self.service.install(
                 tf_path=install_path,
                 selected_addons=selected_addons,
                 on_progress=self._on_progress,
-                apply_particle_selections=apply_particles,
                 disable_paint_colors=disable_paint_colors,
                 show_console_on_startup=show_console,
                 fix_mdl_paths=fix_mdl_paths,
                 skip_quickprecache=skip_quickprecache,
                 sourcemod=sourcemod,
+                particle_selections=particle_selections,
             )
-            self.operation_success.emit("Mods installed successfully!", InstallOperation.INSTALL)
+            if installed:
+                self.operation_success.emit("Mods installed successfully!", InstallOperation.INSTALL)
+            else:
+                # nothing was written, so there is nothing to (re)configure
+                self.operation_success.emit("Mods are already up to date!", None)
             self._on_progress(0, "Installation complete")
 
         except Exception as e:
@@ -96,6 +96,9 @@ class InstallController(QObject):
 
     def install(self, selected_addons: list[str], mod_drop_zone=None, target_path: Path | None = None, sourcemod: Sourcemods = Sourcemods.DEFAULT):
         install_path = target_path if target_path else self.tf_path
+        particle_selections = None
+        if mod_drop_zone:
+            particle_selections = mod_drop_zone.conflict_matrix.get_selected_particles()
 
         if not validate_game_directory(install_path):
             self.operation_error.emit("Invalid target directory!")
@@ -105,7 +108,7 @@ class InstallController(QObject):
         self.processing = True
         thread = threading.Thread(
             target=self._run_install,
-            args=(install_path, selected_addons, mod_drop_zone, sourcemod),
+            args=(install_path, selected_addons, particle_selections, sourcemod),
             daemon=True
         )
         thread.start()

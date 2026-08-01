@@ -821,7 +821,7 @@ class ParticleManagerGUI(QMainWindow):
         show_success(self, message)
         if operation is InstallOperation.UNINSTALL:
             self.show_launch_options_cleanup_popup()
-        else:
+        elif operation is InstallOperation.INSTALL:
             self.show_launch_options_popup()
 
     def delete_selected_addons(self):
