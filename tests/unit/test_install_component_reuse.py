@@ -8,6 +8,37 @@ from core.handlers.pcf_handler import ParticleBackupMismatchError
 from core.services import install as install_service
 
 
+def test_staging_plan_keeps_the_last_selected_source_for_each_destination(tmp_path):
+    first_addon = tmp_path / "addons" / "first"
+    second_addon = tmp_path / "addons" / "second"
+    first_file = first_addon / "materials" / "shared.vmt"
+    second_file = second_addon / "materials" / "shared.vmt"
+    unique_file = first_addon / "materials" / "unique.vmt"
+    for path, content in (
+        (first_file, b"first"),
+        (second_file, b"second"),
+        (unique_file, b"unique"),
+    ):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content)
+
+    plan = install_service._build_staging_plan(
+        [
+            (first_file, first_addon, 0, len(b"first")),
+            (unique_file, first_addon, 0, len(b"unique")),
+            (second_file, second_addon, 1, len(b"second")),
+        ],
+        tmp_path / "patched",
+        tmp_path / "vpk",
+    )
+
+    by_destination = {task[1]: task for task in plan}
+    shared_destination = tmp_path / "vpk" / "materials" / "shared.vmt"
+    assert len(plan) == 2
+    assert by_destination[shared_destination][0] == second_file
+    assert by_destination[shared_destination][2] == 1
+
+
 def test_install_reuses_direct_game_patches_for_a_texture_only_change(tmp_path, monkeypatch):
     tf_path = tmp_path / "tf"
     custom_dir = tf_path / "custom"
@@ -15,6 +46,7 @@ def test_install_reuses_direct_game_patches_for_a_texture_only_change(tmp_path, 
     addon_dir = addons_dir / "texture_addon" / "materials"
     addon_dir.mkdir(parents=True)
     (addon_dir / "texture.vtf").write_bytes(b"texture")
+    (addon_dir / "texture2.vtf").write_bytes(b"texture2")
     custom_dir.mkdir(parents=True)
     (tf_path / "tf2_misc_dir.vpk").write_bytes(b"directory")
 
@@ -40,6 +72,8 @@ def test_install_reuses_direct_game_patches_for_a_texture_only_change(tmp_path, 
     monkeypatch.setattr(install_service, "folder_setup", folder_setup)
     monkeypatch.setattr(install_service, "InstallStateStore", lambda _path: state_store)
     monkeypatch.setattr(install_service, "check_writable", Mock(return_value=True))
+    monkeypatch.setattr(install_service, "_io_worker_count", lambda _count: 2)
+    monkeypatch.setattr(install_service, "COPY_BATCH_SIZE", 1)
 
     forbidden = [
         "initialize_pcf",
@@ -82,6 +116,12 @@ def test_install_reuses_direct_game_patches_for_a_texture_only_change(tmp_path, 
     )
 
     assert result is True
+    assert (
+        folder_setup.temp_to_be_vpk_dir / "materials" / "texture.vtf"
+    ).read_bytes() == b"texture"
+    assert (
+        folder_setup.temp_to_be_vpk_dir / "materials" / "texture2.vtf"
+    ).read_bytes() == b"texture2"
     remove_skybox_vmts.assert_called_once_with(folder_setup.temp_to_be_vpk_dir)
     quickprecache.flush_files.assert_called_once_with()
     state_store.save_current.assert_called_once()

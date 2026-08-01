@@ -1,6 +1,9 @@
 import json
 import logging
+import os
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from time import perf_counter
 from typing import Callable, Optional
 
 from valve_parsers import PCFFile
@@ -29,7 +32,12 @@ from core.handlers.skybox_handler import (
     restore_skybox_files,
 )
 from core.handlers.sound_handler import SoundHandler
-from core.services.install_state import InstallStateStore, make_request_header
+from core.services.install_state import (
+    InstallStateStore,
+    capture_addon_inventory,
+    capture_install_inputs,
+    make_request_header,
+)
 from core.operations.file_processors import (
     check_game_type,
     game_type,
@@ -54,6 +62,33 @@ from core.util.vpk import get_vpk_name
 log = logging.getLogger()
 
 ProgressCallback = Callable[[int, str], None]
+MAX_FILE_IO_WORKERS = 8
+COPY_BATCH_SIZE = 128
+
+
+def _io_worker_count(task_count: int) -> int:
+    platform_limit = MAX_FILE_IO_WORKERS if os.name == "nt" else 1
+    return min(platform_limit, max(1, task_count))
+
+
+def _build_staging_plan(files_to_copy, patched_dir: Path, vpk_dir: Path):
+    """Keep only the last selected source for each deterministic destination."""
+    by_destination = {}
+    for src_path, addon_dir, addon_index, src_size in files_to_copy:
+        rel_path = src_path.relative_to(addon_dir)
+        destination_root = patched_dir if src_path.suffix.lower() == ".pcf" else vpk_dir
+        dest_path = destination_root / rel_path
+        by_destination[dest_path] = (
+            src_path,
+            dest_path,
+            addon_index,
+            src_size,
+            f"{addon_dir.name}/{rel_path.as_posix()}",
+        )
+    return sorted(
+        by_destination.values(),
+        key=lambda task: task[1].as_posix().casefold(),
+    )
 
 
 class InstallService:
@@ -135,6 +170,7 @@ class InstallService:
         reusable_external_custom_paths = set()
         precache_models_for_state = None
         direct_game_files_reused = False
+        is_tf2 = game_target == "Team Fortress 2"
         if particle_selections is not None:
             request_header = make_request_header(
                 selected_addons,
@@ -145,12 +181,89 @@ class InstallService:
                 skip_quickprecache=skip_quickprecache,
                 game_target=game_target,
             )
+        else:
+            state_store.clear(tf_path)
+
+        addon_inventory = capture_addon_inventory(
+            selected_addons,
+            addons_dir=folder_setup.addons_dir,
+            profiler=timer,
+            operation_category="scan_addon",
+        )
+        total_files = 0
+        total_bytes = 0
+        files_to_copy = []
+        hud_addons = {}
+
+        for addon in addon_inventory.addons:
+            if not addon.exists:
+                continue
+
+            mod_json_path = addon.directory / "mod.json"
+            if mod_json_path.is_file():
+                try:
+                    with mod_json_path.open("r", encoding="utf-8") as file:
+                        mod_info = json.load(file)
+                    if mod_info.get("type", "").lower() == "hud":
+                        addon_key = addon.name.lower()
+                        if addon_key in hud_addons:
+                            raise Exception(
+                                "There are 2 mods that have directory names which "
+                                "resolve to the same case-insensitive name:\n"
+                                f"'{hud_addons[addon_key].name}'\n'{addon.directory.name}'"
+                            )
+                        hud_addons[addon_key] = addon.directory
+                        continue
+                except json.JSONDecodeError:
+                    log.warning(f"Invalid JSON in {mod_json_path}", exc_info=True)
+
+            for file in addon.files:
+                src_path = file.path
+                rel_path = file.relative
+                if src_path.name in {"mod.json", "sound.cache"}:
+                    continue
+                if (
+                    rel_path.parts[0] == "scripts"
+                    and len(rel_path.parts) >= 2
+                    and "sound" in src_path.name.lower()
+                    and src_path.suffix == ".txt"
+                ):
+                    continue
+                total_files += 1
+                total_bytes += file.size
+                source_label = f"{addon.directory.name}/{rel_path.as_posix()}"
+                timer.record_inventory("selected-addon", source_label, file.size)
+                files_to_copy.append(
+                    (src_path, addon.directory, addon.index, file.size)
+                )
+
+        self._check_cancelled()
+        timer.checkpoint(
+            "scan_addons",
+            addons=len(selected_addons),
+            files=total_files,
+            bytes=total_bytes,
+            huds=len(hud_addons),
+            workers=addon_inventory.workers,
+        )
+
+        captured_inputs = None
+        if particle_selections is not None:
+            captured_inputs = capture_install_inputs(
+                selected_addons,
+                particle_selections,
+                disable_paint_colors,
+                include_direct_game=is_tf2,
+                profiler=timer,
+                addon_inventory=addon_inventory,
+            )
             is_current, reason = state_store.evaluate(
                 tf_path,
                 request_header,
                 selected_addons,
                 particle_selections,
                 profiler=timer,
+                captured_inputs=captured_inputs,
             )
             timer.checkpoint("check_install_state")
             log.info("Install state result=%s", reason)
@@ -175,14 +288,11 @@ class InstallService:
                     particle_selections,
                     disable_paint_colors,
                     profiler=timer,
+                    captured_inputs=captured_inputs,
                 )
                 log.info("Reusing direct game VPK patches=%s", direct_game_files_reused)
-        else:
-            state_store.clear(tf_path)
 
         try:
-            is_tf2 = game_target == "Team Fortress 2"
-
             file_handler = None
             base_default_pcf = None
             base_default_parents = None
@@ -211,75 +321,6 @@ class InstallService:
                     )
             progress(0, "Installing addons...")
             timer.checkpoint("initialize")
-
-            total_files = 0
-            total_bytes = 0
-            files_to_copy = []
-            hud_addons = {}
-
-            for addon_index, addon_path in enumerate(selected_addons):
-                addon_dir = folder_setup.addons_dir / addon_path
-                if addon_dir.exists() and addon_dir.is_dir():
-                    addon_scan_started = timer.start_operation()
-                    addon_file_count = 0
-                    addon_bytes = 0
-                    mod_json_path = addon_dir / 'mod.json'
-                    if mod_json_path.exists():
-                        try:
-                            with open(mod_json_path, 'r') as f:
-                                mod_info = json.load(f)
-                                if mod_info.get('type', '').lower() == 'hud':
-                                    addon_path = addon_path.lower()
-
-                                    if hud_addons.get(addon_path) is None:
-                                        hud_addons[addon_path] = addon_dir
-                                        timer.end_operation(
-                                            "scan_addon",
-                                            addon_dir.name,
-                                            addon_scan_started,
-                                        )
-                                        continue
-                                    else:
-                                        raise Exception(f"There are 2 mods that have directory names which resolve to the same case-insensitive name:\n'{hud_addons[addon_path].name}'\n'{addon_dir.name}'")
-                        except json.JSONDecodeError:
-                            log.warning(f"Invalid JSON in {mod_json_path}", exc_info=True)
-
-                    for src_path in addon_dir.glob('**/*'):
-                        if src_path.is_file() and src_path.name != 'mod.json' and src_path.name != 'sound.cache':
-                            rel_path = src_path.relative_to(addon_dir)
-                            if (rel_path.parts[0] == 'scripts' and
-                                len(rel_path.parts) >= 2 and
-                                'sound' in src_path.name.lower() and
-                                src_path.suffix == '.txt'):
-                                continue
-                            total_files += 1
-                            src_size = 0
-                            try:
-                                src_size = src_path.stat().st_size
-                                total_bytes += src_size
-                            except OSError:
-                                pass
-                            addon_file_count += 1
-                            addon_bytes += src_size
-                            source_label = f"{addon_dir.name}/{rel_path.as_posix()}"
-                            timer.record_inventory("selected-addon", source_label, src_size)
-                            files_to_copy.append((src_path, addon_dir, addon_index, src_size))
-
-                    timer.end_operation(
-                        "scan_addon",
-                        f"{addon_dir.name} files={addon_file_count}",
-                        addon_scan_started,
-                        size_bytes=addon_bytes,
-                    )
-
-            self._check_cancelled()
-            timer.checkpoint(
-                "scan_addons",
-                addons=len(selected_addons),
-                files=total_files,
-                bytes=total_bytes,
-                huds=len(hud_addons),
-            )
 
             custom_dir = Path(tf_path) / 'custom'
             custom_dir.mkdir(exist_ok=True)
@@ -332,32 +373,63 @@ class InstallService:
             file_origin: dict[Path, int] = {}
 
             if files_to_copy:
-                progress_range = 25
-                completed_files = 0
-                progress(10, f"Installing addons... (0/{total_files} files)")
-
-                for src_path, addon_dir, addon_index, src_size in files_to_copy:
-                    self._check_cancelled()
-
-                    rel_path = src_path.relative_to(addon_dir)
-                    if src_path.suffix.lower() == '.pcf':
-                        dest_path = folder_setup.temp_to_be_patched_dir / rel_path
-                    else:
-                        dest_path = folder_setup.temp_to_be_vpk_dir / rel_path
-
-                    source_label = f"{addon_dir.name}/{rel_path.as_posix()}"
-                    with timer.measure(
-                        "copy_addon_file",
-                        source_label,
-                        size_bytes=src_size,
-                    ):
-                        copy(src_path, dest_path)
+                staging_plan = _build_staging_plan(
+                    files_to_copy,
+                    folder_setup.temp_to_be_patched_dir,
+                    folder_setup.temp_to_be_vpk_dir,
+                )
+                staged_files = len(staging_plan)
+                staged_bytes = sum(task[3] for task in staging_plan)
+                workers = _io_worker_count(staged_files)
+                batches = [
+                    staging_plan[index:index + COPY_BATCH_SIZE]
+                    for index in range(0, staged_files, COPY_BATCH_SIZE)
+                ]
+                for _src_path, dest_path, addon_index, _src_size, _label in staging_plan:
                     file_origin[dest_path] = addon_index
 
-                    completed_files += 1
-                    current_progress = 10 + int((completed_files / total_files) * progress_range)
-                    progress(current_progress, f"Installing addons... ({completed_files}/{total_files} files)")
-                timer.checkpoint("stage_addon_files", bytes=total_bytes, files=total_files)
+                progress_range = 25
+                completed_files = 0
+                progress(10, f"Installing addons... (0/{staged_files} files)")
+
+                def copy_batch(batch):
+                    started_at = perf_counter()
+                    batch_bytes = 0
+                    for src_path, dest_path, _addon_index, src_size, _label in batch:
+                        self._check_cancelled()
+                        copy(src_path, dest_path)
+                        batch_bytes += src_size
+                    return len(batch), batch_bytes, perf_counter() - started_at
+
+                with ThreadPoolExecutor(
+                    max_workers=workers,
+                    thread_name_prefix="preloader-copy",
+                ) as executor:
+                    for batch_index, (batch_count, batch_bytes, duration) in enumerate(
+                        executor.map(copy_batch, batches),
+                        start=1,
+                    ):
+                        timer.record_operation(
+                            "copy_addon_batch",
+                            f"batch={batch_index} files={batch_count}",
+                            duration,
+                            size_bytes=batch_bytes,
+                        )
+                        completed_files += batch_count
+                        current_progress = 10 + int(
+                            (completed_files / staged_files) * progress_range
+                        )
+                        progress(
+                            current_progress,
+                            f"Installing addons... ({completed_files}/{staged_files} files)",
+                        )
+                timer.checkpoint(
+                    "stage_addon_files",
+                    bytes=staged_bytes,
+                    files=staged_files,
+                    source_files=total_files,
+                    workers=workers,
+                )
 
                 if is_tf2:
                     progress(35, "Processing sound mods...")
@@ -667,6 +739,18 @@ class InstallService:
             )
 
             if request_header is not None:
+                save_inputs = captured_inputs
+                if is_tf2 and not direct_game_files_reused:
+                    # Particle preflight can add verified runtime backups. Refresh
+                    # only the small non-addon inputs while reusing the addon tree.
+                    save_inputs = capture_install_inputs(
+                        selected_addons,
+                        particle_selections,
+                        disable_paint_colors,
+                        include_direct_game=True,
+                        profiler=timer,
+                        addon_inventory=addon_inventory,
+                    )
                 state_store.save_current(
                     tf_path,
                     request_header,
@@ -674,6 +758,7 @@ class InstallService:
                     particle_selections,
                     precache_models=precache_models_for_state,
                     profiler=timer,
+                    captured_inputs=save_inputs,
                 )
                 timer.checkpoint("save_install_state")
 

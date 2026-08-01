@@ -77,6 +77,24 @@ class StageTimer:
         self._keep_slow_operation(timing)
         return timing
 
+    def record_operation(
+        self,
+        category: str,
+        label: str,
+        duration: float,
+        *,
+        size_bytes: int = 0,
+    ) -> OperationTiming:
+        """Record an operation timed outside this object's calling thread."""
+        timing = OperationTiming(
+            category=category,
+            label=label,
+            duration=duration,
+            size_bytes=size_bytes,
+        )
+        self._keep_slow_operation(timing)
+        return timing
+
     @contextmanager
     def measure(
         self,
