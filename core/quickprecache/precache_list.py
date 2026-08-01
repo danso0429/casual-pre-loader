@@ -1,5 +1,7 @@
 import logging
+from contextlib import nullcontext
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from valve_parsers import VPKFile
 
@@ -7,10 +9,16 @@ from core.constants import QUICKPRECACHE_FILE_SUFFIXES, QUICKPRECACHE_MODEL_LIST
 
 log = logging.getLogger()
 
+if TYPE_CHECKING:
+    from core.util.perf import StageTimer
+
 QUICKPRECACHE_OUTPUT_NAMES = {"_quickprecache.vpk", "quickprecache.vpk"}
 
 
-def make_precache_list(game_path: Path) -> set[str]:
+def make_precache_list(
+    game_path: Path,
+    profiler: "StageTimer | None" = None,
+) -> set[str]:
     # get list of files to precache from custom
     model_list = set()
     custom_folder = game_path / "tf" / "custom"
@@ -18,13 +26,33 @@ def make_precache_list(game_path: Path) -> set[str]:
     if custom_folder.is_dir():
         for file in custom_folder.iterdir():
             if file.is_dir() and "disabled" not in file.name:
-                model_list.update(manage_folder(file))
+                context = (
+                    profiler.measure("quickprecache_folder", file.name)
+                    if profiler is not None
+                    else nullcontext()
+                )
+                with context:
+                    model_list.update(manage_folder(file))
             elif (
                 file.is_file()
                 and file.name.endswith(".vpk")
                 and file.name.lower() not in QUICKPRECACHE_OUTPUT_NAMES
             ):
-                model_list.update(manage_vpk(file))
+                try:
+                    size_bytes = file.stat().st_size
+                except OSError:
+                    size_bytes = 0
+                context = (
+                    profiler.measure(
+                        "quickprecache_vpk",
+                        file.name,
+                        size_bytes=size_bytes,
+                    )
+                    if profiler is not None
+                    else nullcontext()
+                )
+                with context:
+                    model_list.update(manage_vpk(file))
 
     # filter out cosmetics and other non-gameplay models
     exclusions = ["decompiled ", "competitive_badge", "gameplay_cosmetic", "player/items/", "workshop/player/items/"]

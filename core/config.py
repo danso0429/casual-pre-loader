@@ -68,6 +68,8 @@ class FolderConfig:
     """Location where sourcemod files are backed up to"""
     log_file:      Path | Dep[Path] = Dep(lambda project_dir: project_dir / 'casual-pre-loader.log')
     """File where logs are stored"""
+    install_performance_file: Path | Dep[Path] = Dep(lambda project_dir: project_dir / 'install-performance.log')
+    """File where install stage timings and the slowest operations are reported"""
     mods_dir:      Path | Dep[Path] = Dep(lambda project_dir: project_dir / 'mods')
     """Location where mods are stored"""
     modsinfo_file: Path | Dep[Path] = Dep(lambda project_dir: project_dir / 'modsinfo.json')

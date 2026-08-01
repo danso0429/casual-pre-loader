@@ -2,11 +2,26 @@ import logging
 import re
 import shutil
 from collections.abc import Mapping
+from contextlib import nullcontext
 from pathlib import Path, PurePosixPath
+from typing import TYPE_CHECKING
 
 from valve_parsers import VPKFile
 
 log = logging.getLogger()
+
+if TYPE_CHECKING:
+    from core.util.perf import StageTimer
+
+
+def _measure_file(profiler, category: str, label: str, path: Path):
+    try:
+        size_bytes = path.stat().st_size
+    except OSError:
+        size_bytes = 0
+    if profiler is None:
+        return nullcontext()
+    return profiler.measure(category, label, size_bytes=size_bytes)
 
 
 class SoundHandler:
@@ -14,7 +29,13 @@ class SoundHandler:
         self.sound_extensions = ['.wav', '.mp3']
         self.script_extensions = ['.txt']
 
-    def process_temp_sound_mods(self, temp_mods_dir: Path, backup_scripts_dir: Path, vpk_paths: list[Path]) -> dict | None:
+    def process_temp_sound_mods(
+        self,
+        temp_mods_dir: Path,
+        backup_scripts_dir: Path,
+        vpk_paths: list[Path],
+        profiler: "StageTimer | None" = None,
+    ) -> dict | None:
         temp_sound_dir = temp_mods_dir / 'sound'
         if not temp_sound_dir.exists():
             return None
@@ -27,7 +48,11 @@ class SoundHandler:
         if not all_sound_files:
             return None
 
-        file_mappings = create_vpk_based_mappings(all_sound_files, vpk_paths)
+        file_mappings = create_vpk_based_mappings(
+            all_sound_files,
+            vpk_paths,
+            profiler=profiler,
+        )
         if not file_mappings:
             return {
                 'files_moved': 0,
@@ -40,19 +65,31 @@ class SoundHandler:
         canonical_paths = [mapping['canonical_path'] for mapping in file_mappings]
 
         # identify which script files are needed
-        needed_scripts = identify_needed_scripts(canonical_paths, backup_scripts_dir)
+        needed_scripts = identify_needed_scripts(
+            canonical_paths,
+            backup_scripts_dir,
+            profiler=profiler,
+        )
 
         # copy needed script files to temp_mods_dir/scripts/ (excluding any sound script files from mods)
         temp_scripts_dir = temp_mods_dir / 'scripts'
-        copied_scripts = copy_needed_scripts(needed_scripts, temp_scripts_dir)
+        copied_scripts = copy_needed_scripts(
+            needed_scripts,
+            temp_scripts_dir,
+            profiler=profiler,
+        )
 
         # move/restructure sound files based on VPK mappings
-        moved_files = move_sound_files(file_mappings)
+        moved_files = move_sound_files(file_mappings, profiler=profiler)
 
         # update script files with final paths
         modified_scripts = []
         if copied_scripts and file_mappings:
-            modified_scripts = update_script_paths(copied_scripts, file_mappings)
+            modified_scripts = update_script_paths(
+                copied_scripts,
+                file_mappings,
+                profiler=profiler,
+            )
 
         return {
             'files_moved': len(moved_files),
@@ -62,7 +99,11 @@ class SoundHandler:
         }
 
 
-def identify_needed_scripts(canonical_paths: list[str], backup_scripts_dir: Path) -> list[str]:
+def identify_needed_scripts(
+    canonical_paths: list[str],
+    backup_scripts_dir: Path,
+    profiler: "StageTimer | None" = None,
+) -> list[str]:
     # identify script files needed based on VPK paths
     needed_scripts = set()
 
@@ -80,18 +121,24 @@ def identify_needed_scripts(canonical_paths: list[str], backup_scripts_dir: Path
 
     for script_file in script_files:
         try:
-            with open(script_file, 'r', encoding='utf-8', errors='ignore') as f:
-                content = f.read()
-                normalized_content = content.lower().replace('\\', '/')
+            with _measure_file(
+                profiler,
+                "scan_sound_script",
+                script_file.name,
+                script_file,
+            ):
+                with open(script_file, 'r', encoding='utf-8', errors='ignore') as f:
+                    content = f.read()
+                    normalized_content = content.lower().replace('\\', '/')
 
-            # check if any paths appear in this script file
-            found_matches = []
-            for path in paths_to_match:
-                if path in normalized_content:
-                    found_matches.append(path)
-                    found_sound_paths.add(path)
-                    if str(script_file) not in needed_scripts:
-                        needed_scripts.add(str(script_file))
+                # check if any paths appear in this script file
+                found_matches = []
+                for path in paths_to_match:
+                    if path in normalized_content:
+                        found_matches.append(path)
+                        found_sound_paths.add(path)
+                        if str(script_file) not in needed_scripts:
+                            needed_scripts.add(str(script_file))
 
         except Exception:
             log.exception(f"Error reading sound script file {script_file}")
@@ -101,7 +148,11 @@ def identify_needed_scripts(canonical_paths: list[str], backup_scripts_dir: Path
     return list(needed_scripts)
 
 
-def copy_needed_scripts(needed_scripts: list[str], temp_scripts_dir: Path) -> list[str]:
+def copy_needed_scripts(
+    needed_scripts: list[str],
+    temp_scripts_dir: Path,
+    profiler: "StageTimer | None" = None,
+) -> list[str]:
     # copy needed script files from backup/
     temp_scripts_dir.mkdir(parents=True, exist_ok=True)
     copied_scripts = []
@@ -111,7 +162,13 @@ def copy_needed_scripts(needed_scripts: list[str], temp_scripts_dir: Path) -> li
         target_path = temp_scripts_dir / script_path.name
 
         try:
-            shutil.copy2(script_path, target_path)
+            with _measure_file(
+                profiler,
+                "copy_sound_script",
+                script_path.name,
+                script_path,
+            ):
+                shutil.copy2(script_path, target_path)
             copied_scripts.append(str(target_path))
         except Exception:
             log.exception(f"Error copying script file {script_file} to {target_path}")
@@ -181,7 +238,11 @@ def update_script_files(script_files: list[str], path_mappings: list[tuple[str, 
     return modified_files
 
 
-def create_vpk_based_mappings(sound_files: list[Path], vpk_paths: list[Path]) -> list[dict]:
+def create_vpk_based_mappings(
+    sound_files: list[Path],
+    vpk_paths: list[Path],
+    profiler: "StageTimer | None" = None,
+) -> list[dict]:
     # Index the sound paths once. Calling VPKFile.find_file_path for every mod
     # sound scans the archive directory again for each file, which becomes very
     # expensive for large sound packs.
@@ -189,13 +250,19 @@ def create_vpk_based_mappings(sound_files: list[Path], vpk_paths: list[Path]) ->
     extensions = list(dict.fromkeys(path.suffix.removeprefix('.') for path in sound_files))
     for vpk_path in vpk_paths:
         try:
-            vpk = VPKFile(vpk_path)
-            for extension in extensions:
-                for archive_path in vpk.list_files(extension=extension):
-                    filename = PurePosixPath(archive_path.replace('\\', '/')).name
-                    # Preserve the original VPK priority and the first path a
-                    # VPK would return for duplicate basenames.
-                    canonical_path_by_filename.setdefault(filename, archive_path)
+            with _measure_file(
+                profiler,
+                "index_sound_vpk",
+                vpk_path.name,
+                vpk_path,
+            ):
+                vpk = VPKFile(vpk_path)
+                for extension in extensions:
+                    for archive_path in vpk.list_files(extension=extension):
+                        filename = PurePosixPath(archive_path.replace('\\', '/')).name
+                        # Preserve the original VPK priority and the first path a
+                        # VPK would return for duplicate basenames.
+                        canonical_path_by_filename.setdefault(filename, archive_path)
         except Exception:
             log.exception(f"Error loading {vpk_path}")
             continue
@@ -247,7 +314,10 @@ def create_vpk_based_mappings(sound_files: list[Path], vpk_paths: list[Path]) ->
 
 
 # TODO: narrow types
-def move_sound_files(file_mappings: list[Mapping]) -> list[tuple[str, str]]:
+def move_sound_files(
+    file_mappings: list[Mapping],
+    profiler: "StageTimer | None" = None,
+) -> list[tuple[str, str]]:
     # move sound files to their VPK based locations
     moved_files = []
 
@@ -271,7 +341,13 @@ def move_sound_files(file_mappings: list[Mapping]) -> list[tuple[str, str]]:
 
         try:
             if source_file != target_path:  # only move if different
-                shutil.move(str(source_file), str(target_path))
+                with _measure_file(
+                    profiler,
+                    "move_sound_file",
+                    mapping['canonical_path'],
+                    source_file,
+                ):
+                    shutil.move(str(source_file), str(target_path))
                 moved_files.append((str(source_file), str(target_path)))
         except Exception:
             log.exception(f"Error moving {source_file} to {target_path}")
@@ -280,7 +356,11 @@ def move_sound_files(file_mappings: list[Mapping]) -> list[tuple[str, str]]:
 
 
 # TODO: narrow types
-def update_script_paths(script_files: list[str], file_mappings: list[Mapping]) -> list[str]:
+def update_script_paths(
+    script_files: list[str],
+    file_mappings: list[Mapping],
+    profiler: "StageTimer | None" = None,
+) -> list[str]:
     # create mapping from canonical path to final path
     path_mappings = {}
     for mapping in file_mappings:
@@ -288,4 +368,19 @@ def update_script_paths(script_files: list[str], file_mappings: list[Mapping]) -
         final_with_ext = str(Path(mapping['final_path'])).replace('\\', '/')
         path_mappings[canonical_with_ext] = final_with_ext
 
-    return update_script_files(script_files, list(path_mappings.items()))
+    if profiler is None:
+        return update_script_files(script_files, list(path_mappings.items()))
+
+    modified_files = []
+    for script_file in script_files:
+        script_path = Path(script_file)
+        with _measure_file(
+            profiler,
+            "rewrite_sound_script",
+            script_path.name,
+            script_path,
+        ):
+            modified_files.extend(
+                update_script_files([script_file], list(path_mappings.items()))
+            )
+    return modified_files

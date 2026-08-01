@@ -4,6 +4,7 @@ from pathlib import Path
 
 from PyQt6.QtCore import QObject, pyqtSignal
 
+from core.config import config
 from core.constants import InstallOperation, Sourcemods
 from core.services.install import InstallService
 from core.util.sourcemod import validate_game_directory
@@ -64,11 +65,12 @@ class InstallController(QObject):
                 sourcemod=sourcemod,
                 particle_selections=particle_selections,
             )
+            report_note = f"\n\nPerformance report:\n{config.install_performance_file}"
             if installed:
-                self.operation_success.emit("Mods installed successfully!", InstallOperation.INSTALL)
+                self.operation_success.emit(f"Mods installed successfully!{report_note}", InstallOperation.INSTALL)
             else:
                 # nothing was written, so there is nothing to (re)configure
-                self.operation_success.emit("Mods are already up to date!", None)
+                self.operation_success.emit(f"Mods are already up to date!{report_note}", None)
             self._on_progress(0, "Installation complete")
 
         except Exception as e:
