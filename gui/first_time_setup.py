@@ -27,6 +27,7 @@ from core.services.setup import (
     save_initial_settings,
 )
 from core.util.sourcemod import auto_detect_sourcemod, validate_game_directory
+from core.version import DISPLAY_NAME
 from gui.theme import BUTTON_STYLE_ALT, FONT_SIZE_HEADER
 
 log = logging.getLogger()
@@ -56,7 +57,7 @@ class FirstTimeSetupDialog(QDialog):
         layout = QVBoxLayout(self)
 
         # title
-        welcome_label = QLabel("Welcome to the casual pre-loader!")
+        welcome_label = QLabel(f"Welcome to {DISPLAY_NAME}!")
         welcome_label.setStyleSheet(f"font-size: {FONT_SIZE_HEADER}; font-weight: bold; margin: 10px;")
         welcome_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(welcome_label)

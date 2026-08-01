@@ -1,6 +1,8 @@
 <div align="center">
 
-## Casual Preloader
+## The Casual File Shuffler 9000
+
+*Personal build of Casual Preloader*
 
 *Load custom TF2 particles, models, materials, and more on Valve casual servers*
 

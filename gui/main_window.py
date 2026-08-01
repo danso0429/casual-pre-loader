@@ -27,7 +27,7 @@ from PyQt6.QtWidgets import (
 from core.folder_setup import folder_setup
 from core.particle_splits import migrate_old_particle_files
 from core.services.conflicts import scan_for_legacy_conflicts
-from core.version import VERSION
+from core.version import DISPLAY_NAME, VERSION
 from gui.addons_manager import AddonsManager
 from gui.addon_panel import AddonPanel
 from gui.dialogs import confirm_action, show_error, show_success
@@ -94,7 +94,7 @@ class ParticleManagerGUI(QMainWindow):
         self.simple_mode_btn = None
 
         # setup
-        self.setWindowTitle("cukei's casual pre-loader :)")
+        self.setWindowTitle(DISPLAY_NAME)
         self.setMinimumSize(1200, 700)
         self.resize(1200, 700)
         self.setAcceptDrops(True)
