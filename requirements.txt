@@ -8,4 +8,4 @@ packaging~=26.3
 platformdirs~=4.12
 PyGithub~=2.10
 rich~=15.0
-valve-parsers>=1.2.2
+valve-parsers~=1.2.2
