@@ -124,9 +124,10 @@ class QuickPrecache:
             return False
 
     def split_into_builders(self, strings: set[str]) -> list[str]:
-        # pack the $includemodel lines into chunks that fit within MAX_SPLIT_SIZE
+        # pack the $includemodel lines into chunks that fit within MAX_SPLIT_SIZE;
+        # a single model path longer than the soft limit gets a chunk of its own
         lines = [get_include_model(s) for s in sorted(strings)]
-        batches = constrained_batches(lines, self.MAX_SPLIT_SIZE - self.HEADER_RESERVE, strict=True)
+        batches = constrained_batches(lines, self.MAX_SPLIT_SIZE - self.HEADER_RESERVE, strict=False)
         return ["".join(batch) for batch in batches]
 
     def make_precache_sub_list(self, strings: set[str]) -> None:
@@ -137,6 +138,7 @@ class QuickPrecache:
         # + 1 for the main precache.mdl from make_precache_list_file
         self.total_compiles = len(bodies) + 1
         self.compiled_count = 0
+        self.builder_index = 0
 
         # the chunk index names both the file and its $modelname, so get both
         for index, body in enumerate(bodies, start=self.builder_index):
@@ -208,11 +210,18 @@ class QuickPrecache:
             except Exception:
                 log.exception(f"Error removing temporary file {temp_file}")
 
-    def run(self, auto: bool = False, list_file: str = "", flush: bool = False) -> bool:
+    def run(
+        self,
+        auto: bool = False,
+        list_file: str = "",
+        flush: bool = False,
+        model_list: set[str] | None = None,
+        flush_existing: bool = True,
+    ) -> bool:
         # main process
         try:
             # step 1: flush old files
-            files_removed = self.flush_files()
+            files_removed = self.flush_files() if flush_existing or flush else 0
 
             if flush:
                 log.info("Flush completed. Exiting as requested.")
@@ -227,7 +236,9 @@ class QuickPrecache:
             check_root_lod(self.game_path)
 
             # step 3: get the model list
-            if auto:
+            if model_list is not None:
+                self.model_list = set(model_list)
+            elif auto:
                 log.info("Auto-scanning for models...")
                 self.model_list = make_precache_list(self.game_path)
 
