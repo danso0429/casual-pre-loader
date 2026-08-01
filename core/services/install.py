@@ -3,7 +3,7 @@ import logging
 from pathlib import Path
 from typing import Callable, Optional
 
-from valve_parsers import PCFFile, VPKFile
+from valve_parsers import PCFFile
 
 from core.backup_manager import prepare_working_copy
 from core.constants import (
@@ -45,6 +45,7 @@ from core.quickprecache.precache_list import make_precache_list
 from core.quickprecache.quick_precache import QuickPrecache
 from core.util.file import check_writable, copy, delete, move
 from core.util.perf import StageTimer
+from core.util.profiled_vpk import create_profiled_vpk
 from core.util.pcf_path_walk import apply_particle_selections as stage_particle_selections
 from core.util.vpk import get_vpk_name
 
@@ -147,6 +148,7 @@ class InstallService:
                 request_header,
                 selected_addons,
                 particle_selections,
+                profiler=timer,
             )
             timer.checkpoint("check_install_state")
             log.info("Install state result=%s", reason)
@@ -157,6 +159,7 @@ class InstallService:
             reusable_external_custom_paths = state_store.reusable_external_custom_paths(
                 tf_path,
                 request_header,
+                profiler=timer,
             )
             log.info(
                 "Reusing finalized external custom files count=%d",
@@ -169,6 +172,7 @@ class InstallService:
                     selected_addons,
                     particle_selections,
                     disable_paint_colors,
+                    profiler=timer,
                 )
                 log.info("Reusing direct game VPK patches=%s", direct_game_files_reused)
         else:
@@ -289,9 +293,11 @@ class InstallService:
 
             self._check_cancelled()
             if is_tf2 and not direct_game_files_reused:
-                restore_skybox_files(tf_path)
-                restore_particle_files(tf_path)
-                enable_paints(tf_path)
+                with timer.measure("restore_skybox_files", "game VPK"):
+                    restore_skybox_files(tf_path)
+                restore_particle_files(tf_path, profiler=timer)
+                with timer.measure("restore_paint_files", "game VPK"):
+                    enable_paints(tf_path)
             timer.checkpoint("restore_game_files", reused=direct_game_files_reused)
 
             self._check_cancelled()
@@ -544,8 +550,13 @@ class InstallService:
                 split_size = 2 ** 31
                 vpk_base_path = custom_dir / CUSTOM_VPK_NAME.replace('.vpk', '')
 
-                custom_content_dir.mkdir(parents=True, exist_ok=True) # INFO: technically not necessary, but VPKFile does not check if `source_dir` exists
-                if not VPKFile.create(str(custom_content_dir), str(vpk_base_path), split_size):
+                custom_content_dir.mkdir(parents=True, exist_ok=True)
+                if not create_profiled_vpk(
+                    custom_content_dir,
+                    vpk_base_path,
+                    split_size,
+                    timer,
+                ):
                     raise Exception("Failed to create custom VPK")
             timer.checkpoint("build_custom_vpk")
 
@@ -579,6 +590,7 @@ class InstallService:
                             tf_path,
                             request_header,
                             precache_prop_set,
+                            profiler=timer,
                         )
 
                 if not precache_reused:
@@ -643,6 +655,7 @@ class InstallService:
                     selected_addons,
                     particle_selections,
                     precache_models=precache_models_for_state,
+                    profiler=timer,
                 )
                 timer.checkpoint("save_install_state")
 

@@ -2,8 +2,9 @@ import hashlib
 import json
 import logging
 import os
+from contextlib import nullcontext
 from pathlib import Path
-from typing import Callable
+from typing import TYPE_CHECKING, Callable
 
 from core.constants import BACKUP_MAINMENU_FOLDER, CUSTOM_VPK_NAME
 from core.folder_setup import folder_setup
@@ -12,8 +13,25 @@ from core.version import VERSION
 
 log = logging.getLogger()
 
+if TYPE_CHECKING:
+    from core.util.perf import StageTimer
+
 INSTALL_STATE_SCHEMA = 1
-INSTALL_RECIPE_VERSION = 1
+INSTALL_RECIPE_VERSION = 2
+
+
+def _measure(profiler, category: str, label: str):
+    if profiler is None:
+        return nullcontext()
+    return profiler.measure(category, label)
+
+
+def _request_identity(request: dict) -> dict:
+    if not isinstance(request, dict):
+        return {}
+    identity = dict(request)
+    identity.pop("app_version", None)
+    return identity
 
 
 def make_request_header(
@@ -70,27 +88,30 @@ def _tree_entries(
 def capture_source_state(
     selected_addons: list[str],
     particle_selections: dict[str, str],
+    profiler: "StageTimer | None" = None,
 ) -> list[list]:
     entries = []
     for index, addon_name in enumerate(selected_addons):
         addon_dir = folder_setup.addons_dir / addon_name
-        entries.extend(
-            _tree_entries(
-                addon_dir,
-                f"addons/{index}/{addon_name}",
-                lambda path: path.name != "sound.cache",
+        with _measure(profiler, "state_source_addon", addon_name):
+            entries.extend(
+                _tree_entries(
+                    addon_dir,
+                    f"addons/{index}/{addon_name}",
+                    lambda path: path.name != "sound.cache",
+                )
             )
-        )
 
     for mod_name in sorted(set(particle_selections.values())):
         particle_mod_dir = folder_setup.particles_dir / mod_name
-        entries.extend(
-            _tree_entries(
-                particle_mod_dir,
-                f"particles/{mod_name}",
-                lambda path: path.name != "sound.cache",
+        with _measure(profiler, "state_source_particle_mod", mod_name):
+            entries.extend(
+                _tree_entries(
+                    particle_mod_dir,
+                    f"particles/{mod_name}",
+                    lambda path: path.name != "sound.cache",
+                )
             )
-        )
     return entries
 
 
@@ -189,6 +210,7 @@ def capture_direct_game_inputs(
     selected_addons: list[str],
     particle_selections: dict[str, str],
     disable_paint_colors: bool,
+    profiler: "StageTimer | None" = None,
 ) -> list[list]:
     entries = [
         ["disable_paint_colors", disable_paint_colors],
@@ -205,13 +227,14 @@ def capture_direct_game_inputs(
                 and path.suffix.casefold() == ".vmt"
             )
 
-        entries.extend(
-            _tree_entries(
-                addon_dir,
-                f"direct_addons/{index}/{addon_name}",
-                include_direct_addon_file,
-            )[1:]
-        )
+        with _measure(profiler, "state_direct_addon", addon_name):
+            entries.extend(
+                _tree_entries(
+                    addon_dir,
+                    f"direct_addons/{index}/{addon_name}",
+                    include_direct_addon_file,
+                )[1:]
+            )
 
     for particle_name, mod_name in sorted(particle_selections.items()):
         source_path = (
@@ -311,28 +334,43 @@ class InstallStateStore:
         request_header: dict,
         selected_addons: list[str],
         particle_selections: dict[str, str],
+        profiler: "StageTimer | None" = None,
     ) -> tuple[bool, str]:
-        target = self._load()["targets"].get(self._target_key(tf_path))
+        with _measure(profiler, "state_load", "install_state.json"):
+            target = self._load()["targets"].get(self._target_key(tf_path))
         if target is None:
             return False, "no_previous_state"
-        if target.get("request") != request_header:
+        if _request_identity(target.get("request", {})) != _request_identity(
+            request_header
+        ):
             return False, "request_changed"
-        if target.get("sources") != capture_source_state(selected_addons, particle_selections):
+        if target.get("sources") != capture_source_state(
+            selected_addons,
+            particle_selections,
+            profiler=profiler,
+        ):
             return False, "source_files_changed"
 
         custom_dir = Path(tf_path) / "custom"
-        if target.get("external_custom") != capture_external_custom_state(custom_dir):
+        with _measure(profiler, "state_external_custom", "tf/custom"):
+            external_custom = capture_external_custom_state(custom_dir)
+        if target.get("external_custom") != external_custom:
             return False, "external_custom_changed"
-        if target.get("outputs") != capture_managed_outputs(tf_path):
+        with _measure(profiler, "state_managed_outputs", "managed outputs"):
+            managed_outputs = capture_managed_outputs(tf_path)
+        if target.get("outputs") != managed_outputs:
             return False, "managed_outputs_changed"
         if request_header.get("game_target") == "Team Fortress 2":
             if target.get("direct_game_inputs") != capture_direct_game_inputs(
                 selected_addons,
                 particle_selections,
                 request_header["options"]["disable_paint_colors"],
+                profiler=profiler,
             ):
                 return False, "direct_game_inputs_changed"
-            if target.get("direct_game_output") != capture_direct_game_output(tf_path):
+            with _measure(profiler, "state_direct_output", "game VPK"):
+                direct_game_output = capture_direct_game_output(tf_path)
+            if target.get("direct_game_output") != direct_game_output:
                 return False, "direct_game_output_changed"
         return True, "up_to_date"
 
@@ -340,6 +378,7 @@ class InstallStateStore:
         self,
         tf_path: Path | str,
         request_header: dict,
+        profiler: "StageTimer | None" = None,
     ) -> set[str]:
         """Return external custom files already finalized by this recipe."""
         target = self._load()["targets"].get(self._target_key(tf_path))
@@ -349,7 +388,7 @@ class InstallStateStore:
         previous_request = target.get("request")
         if not isinstance(previous_request, dict):
             return set()
-        compatibility_keys = ("recipe", "app_version", "game_target")
+        compatibility_keys = ("recipe", "game_target")
         if any(previous_request.get(key) != request_header.get(key) for key in compatibility_keys):
             return set()
 
@@ -358,11 +397,12 @@ class InstallStateStore:
             for entry in target.get("external_custom", [])
             if isinstance(entry, list) and len(entry) == 4
         }
-        current_entries = {
-            tuple(entry)
-            for entry in capture_external_custom_state(Path(tf_path) / "custom")
-            if len(entry) == 4
-        }
+        with _measure(profiler, "state_reuse_external", "tf/custom"):
+            current_entries = {
+                tuple(entry)
+                for entry in capture_external_custom_state(Path(tf_path) / "custom")
+                if len(entry) == 4
+            }
 
         reusable = set()
         for entry in saved_entries & current_entries:
@@ -376,6 +416,7 @@ class InstallStateStore:
         tf_path: Path | str,
         request_header: dict,
         model_list: set[str],
+        profiler: "StageTimer | None" = None,
     ) -> bool:
         target = self._load()["targets"].get(self._target_key(tf_path))
         if target is None:
@@ -384,13 +425,15 @@ class InstallStateStore:
         previous_request = target.get("request")
         if not isinstance(previous_request, dict):
             return False
-        compatibility_keys = ("recipe", "app_version", "game_target")
+        compatibility_keys = ("recipe", "game_target")
         if any(previous_request.get(key) != request_header.get(key) for key in compatibility_keys):
             return False
 
+        with _measure(profiler, "state_precache_outputs", "QuickPrecache outputs"):
+            precache_outputs = capture_precache_outputs(tf_path)
         return (
             target.get("precache_models") == sorted(model_list)
-            and target.get("precache_outputs") == capture_precache_outputs(tf_path)
+            and target.get("precache_outputs") == precache_outputs
         )
 
     def can_reuse_direct_game_files(
@@ -400,6 +443,7 @@ class InstallStateStore:
         selected_addons: list[str],
         particle_selections: dict[str, str],
         disable_paint_colors: bool,
+        profiler: "StageTimer | None" = None,
     ) -> bool:
         target = self._load()["targets"].get(self._target_key(tf_path))
         if target is None:
@@ -408,7 +452,7 @@ class InstallStateStore:
         previous_request = target.get("request")
         if not isinstance(previous_request, dict):
             return False
-        compatibility_keys = ("recipe", "app_version", "game_target")
+        compatibility_keys = ("recipe", "game_target")
         if any(previous_request.get(key) != request_header.get(key) for key in compatibility_keys):
             return False
 
@@ -418,6 +462,7 @@ class InstallStateStore:
                 selected_addons,
                 particle_selections,
                 disable_paint_colors,
+                profiler=profiler,
             )
             and target.get("direct_game_output") == capture_direct_game_output(tf_path)
         )
@@ -429,30 +474,51 @@ class InstallStateStore:
         selected_addons: list[str],
         particle_selections: dict[str, str],
         precache_models: set[str] | None = None,
+        profiler: "StageTimer | None" = None,
     ) -> None:
-        state = self._load()
+        with _measure(profiler, "state_load", "install_state.json"):
+            state = self._load()
         is_tf2 = request_header.get("game_target") == "Team Fortress 2"
+        sources = capture_source_state(
+            selected_addons,
+            particle_selections,
+            profiler=profiler,
+        )
+        with _measure(profiler, "state_external_custom", "tf/custom"):
+            external_custom = capture_external_custom_state(Path(tf_path) / "custom")
+        with _measure(profiler, "state_managed_outputs", "managed outputs"):
+            outputs = capture_managed_outputs(tf_path)
+        with _measure(profiler, "state_precache_outputs", "QuickPrecache outputs"):
+            precache_outputs = (
+                capture_precache_outputs(tf_path)
+                if precache_models is not None
+                else None
+            )
+        direct_game_inputs = (
+            capture_direct_game_inputs(
+                selected_addons,
+                particle_selections,
+                request_header["options"]["disable_paint_colors"],
+                profiler=profiler,
+            )
+            if is_tf2
+            else None
+        )
+        with _measure(profiler, "state_direct_output", "game VPK"):
+            direct_game_output = capture_direct_game_output(tf_path) if is_tf2 else None
+
         state["targets"][self._target_key(tf_path)] = {
             "request": request_header,
-            "sources": capture_source_state(selected_addons, particle_selections),
-            "external_custom": capture_external_custom_state(Path(tf_path) / "custom"),
-            "outputs": capture_managed_outputs(tf_path),
+            "sources": sources,
+            "external_custom": external_custom,
+            "outputs": outputs,
             "precache_models": sorted(precache_models) if precache_models is not None else None,
-            "precache_outputs": (
-                capture_precache_outputs(tf_path) if precache_models is not None else None
-            ),
-            "direct_game_inputs": (
-                capture_direct_game_inputs(
-                    selected_addons,
-                    particle_selections,
-                    request_header["options"]["disable_paint_colors"],
-                )
-                if is_tf2
-                else None
-            ),
-            "direct_game_output": capture_direct_game_output(tf_path) if is_tf2 else None,
+            "precache_outputs": precache_outputs,
+            "direct_game_inputs": direct_game_inputs,
+            "direct_game_output": direct_game_output,
         }
-        self._write(state)
+        with _measure(profiler, "state_write", "install_state.json fsync"):
+            self._write(state)
 
     def clear(self, tf_path: Path | str) -> None:
         state = self._load()

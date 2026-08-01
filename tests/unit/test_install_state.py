@@ -75,6 +75,13 @@ def test_saved_install_state_recognizes_an_unchanged_install(tmp_path, monkeypat
         True,
         "up_to_date",
     )
+    newer_app_build = {**request, "app_version": "999.0+personal.999"}
+    assert store.evaluate(
+        tf_path,
+        newer_app_build,
+        ["addon"],
+        {"particle": "particle_mod"},
+    ) == (True, "up_to_date")
     saved = json.loads(store.path.read_text(encoding="utf-8"))
     assert saved["schema"] == install_state.INSTALL_STATE_SCHEMA
 
