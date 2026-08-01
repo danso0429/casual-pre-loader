@@ -36,6 +36,7 @@ def test_stage_timer_writes_bounded_slow_file_report(tmp_path):
         report_path=report_path,
         slow_threshold=0.010,
         detail_limit=1,
+        category_limit=1,
     )
 
     with timer.measure("copy_addon_file", "small/file.vtf", size_bytes=10):
@@ -47,10 +48,15 @@ def test_stage_timer_writes_bounded_slow_file_report(tmp_path):
 
     assert timer.finish() == pytest.approx(0.5)
     assert [timing.label for timing in timer.slow_operations] == ["slow/file.vtf"]
+    assert [
+        timing.label
+        for timing in timer.slow_operations_by_category["copy_addon_file"]
+    ] == ["slow/file.vtf"]
     assert [entry.label for entry in timer.inventory["custom-vpk"]] == ["large/file.vtf"]
 
     report = report_path.read_text(encoding="utf-8")
     assert "The Casual File Shuffler 9000 performance report" in report
     assert "slow-rank=1 category=copy_addon_file duration=0.200s bytes=200 file=slow/file.vtf" in report
+    assert "SLOW BY CATEGORY category=copy_addon_file top=1" in report
     assert "size-rank=1 bytes=500 file=large/file.vtf" in report
     assert "small/file.vtf" not in report
