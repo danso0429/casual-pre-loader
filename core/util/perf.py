@@ -41,6 +41,7 @@ class StageTimer:
         report_path: Path | None = None,
         slow_threshold: float = 0.010,
         detail_limit: int = 20,
+        category_limit: int = 5,
     ):
         self.logger = logger
         self.operation = operation
@@ -48,10 +49,12 @@ class StageTimer:
         self.report_path = report_path
         self.slow_threshold = slow_threshold
         self.detail_limit = detail_limit
+        self.category_limit = category_limit
         self.started_at = self.clock()
         self.last_checkpoint = self.started_at
         self.timings: list[StageTiming] = []
         self.slow_operations: list[OperationTiming] = []
+        self.slow_operations_by_category: dict[str, list[OperationTiming]] = {}
         self.inventory: dict[str, list[InventoryEntry]] = {}
 
     def start_operation(self) -> float:
@@ -100,6 +103,15 @@ class StageTimer:
         self.slow_operations.append(timing)
         self.slow_operations.sort(key=lambda item: item.duration, reverse=True)
         del self.slow_operations[self.detail_limit:]
+
+        if self.category_limit > 0:
+            category_entries = self.slow_operations_by_category.setdefault(
+                timing.category,
+                [],
+            )
+            category_entries.append(timing)
+            category_entries.sort(key=lambda item: item.duration, reverse=True)
+            del category_entries[self.category_limit:]
 
     def record_inventory(
         self,
@@ -190,6 +202,19 @@ class StageTimer:
                 )
         else:
             lines.append("none")
+
+        for category, timings in sorted(self.slow_operations_by_category.items()):
+            lines.extend(
+                (
+                    "",
+                    f"SLOW BY CATEGORY category={category} top={self.category_limit}",
+                )
+            )
+            for rank, timing in enumerate(timings, start=1):
+                lines.append(
+                    f"category-rank={rank} duration={timing.duration:.3f}s "
+                    f"bytes={timing.size_bytes} file={timing.label}"
+                )
 
         for category, entries in sorted(self.inventory.items()):
             lines.extend(("", f"LARGEST INPUTS category={category} top={self.detail_limit}"))
