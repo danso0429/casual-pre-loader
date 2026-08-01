@@ -248,6 +248,16 @@ def test_direct_game_vpk_patch_is_reused_for_non_direct_addon_changes(tmp_path, 
         False,
     )
 
+    previous_recipe = {**request, "recipe": 1}
+    store.save_current(tf_path, previous_recipe, ["addon"], selections)
+    assert store.can_reuse_direct_game_files(
+        tf_path,
+        request,
+        ["addon"],
+        selections,
+        False,
+    )
+
     (tf_path / "tf2_misc_dir.vpk").write_bytes(b"game update")
     assert not store.can_reuse_direct_game_files(
         tf_path,

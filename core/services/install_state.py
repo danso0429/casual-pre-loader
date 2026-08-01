@@ -18,6 +18,7 @@ if TYPE_CHECKING:
 
 INSTALL_STATE_SCHEMA = 1
 INSTALL_RECIPE_VERSION = 2
+DIRECT_GAME_COMPATIBLE_RECIPE_UPGRADES = {(1, 2)}
 
 
 def _measure(profiler, category: str, label: str):
@@ -32,6 +33,15 @@ def _request_identity(request: dict) -> dict:
     identity = dict(request)
     identity.pop("app_version", None)
     return identity
+
+
+def _direct_game_recipes_are_compatible(previous: dict, current: dict) -> bool:
+    previous_recipe = previous.get("recipe")
+    current_recipe = current.get("recipe")
+    return previous_recipe == current_recipe or (
+        previous_recipe,
+        current_recipe,
+    ) in DIRECT_GAME_COMPATIBLE_RECIPE_UPGRADES
 
 
 def make_request_header(
@@ -426,7 +436,10 @@ class InstallStateStore:
         if not isinstance(previous_request, dict):
             return False
         compatibility_keys = ("recipe", "game_target")
-        if any(previous_request.get(key) != request_header.get(key) for key in compatibility_keys):
+        if any(
+            previous_request.get(key) != request_header.get(key)
+            for key in compatibility_keys
+        ):
             return False
 
         with _measure(profiler, "state_precache_outputs", "QuickPrecache outputs"):
@@ -452,8 +465,9 @@ class InstallStateStore:
         previous_request = target.get("request")
         if not isinstance(previous_request, dict):
             return False
-        compatibility_keys = ("recipe", "game_target")
-        if any(previous_request.get(key) != request_header.get(key) for key in compatibility_keys):
+        if previous_request.get("game_target") != request_header.get("game_target"):
+            return False
+        if not _direct_game_recipes_are_compatible(previous_request, request_header):
             return False
 
         return (
