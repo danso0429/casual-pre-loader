@@ -61,7 +61,7 @@ def test_install_reuses_direct_game_patches_for_a_texture_only_change(tmp_path, 
     monkeypatch.setattr(install_service, "patch_mainmenuoverride", Mock())
     monkeypatch.setattr(install_service, "relocate_mdl_paths", Mock())
     monkeypatch.setattr(install_service, "generate_missing_vmt_files", Mock())
-    monkeypatch.setattr(install_service.VPKFile, "create", Mock(return_value=True))
+    monkeypatch.setattr(install_service, "create_profiled_vpk", Mock(return_value=True))
     monkeypatch.setattr(install_service, "make_precache_list", Mock(return_value=set()))
     monkeypatch.setattr(install_service, "get_from_custom_dir", Mock())
     reset_working_copy = Mock()
