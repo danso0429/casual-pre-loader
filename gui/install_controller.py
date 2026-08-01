@@ -4,6 +4,7 @@ import threading
 from PyQt6.QtCore import QObject, pyqtSignal
 
 from core.folder_setup import folder_setup
+from core.handlers.pcf_handler import ParticleBackupMismatchError
 from core.services.install import InstallService
 from core.util.sourcemod import validate_game_directory
 
@@ -70,6 +71,11 @@ class InstallController(QObject):
                 self.operation_success.emit(f"Mods are already up to date!{report_note}")
             self._on_progress(0, "Installation complete")
 
+        except ParticleBackupMismatchError as e:
+            self.operation_error.emit(
+                "Installation stopped because a safe vanilla particle backup could "
+                f"not be verified.\n\n{e}"
+            )
         except Exception as e:
             was_cancelled = "cancelled by user" in str(e).lower()
             if was_cancelled:

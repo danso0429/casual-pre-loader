@@ -46,10 +46,11 @@ def mock_folder_setup(monkeypatch):
         mock_config.temp_to_be_patched_dir = temp_path / "temp" / "to_be_patched"
         mock_config.temp_to_be_vpk_dir = temp_path / "temp" / "to_be_vpk"
         mock_config.backup_dir = temp_path / "backup"
+        mock_config.game_backups_dir = temp_path / "game_backups"
         mock_config.addons_dir = temp_path / "addons"
         mock_config.install_dir = temp_path / "install"
 
-        for attr in ['temp_dir', 'temp_to_be_patched_dir', 'temp_to_be_vpk_dir', 'backup_dir', 'addons_dir', 'install_dir']:
+        for attr in ['temp_dir', 'temp_to_be_patched_dir', 'temp_to_be_vpk_dir', 'backup_dir', 'game_backups_dir', 'addons_dir', 'install_dir']:
             getattr(mock_config, attr).mkdir(parents=True, exist_ok=True)
 
         # create backup structure

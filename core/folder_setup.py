@@ -44,6 +44,7 @@ class FolderConfig:
     __deps = {
         'project_dir': {
             'backup_dir': lambda self: self.project_dir / 'backup',
+            'game_backups_dir': lambda self: self.project_dir / 'game_backups',
             'mods_dir':   lambda self: self.project_dir / 'mods',
 
             'log_file':                    lambda self: self.project_dir / 'casual-pre-loader.log',

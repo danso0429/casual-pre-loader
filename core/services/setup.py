@@ -39,17 +39,24 @@ def import_userdata(userdata_path: Path) -> tuple[bool, list[str]]:
 
     items: list[tuple[Path, Path]] = [
         (src_data / folder_setup.mods_dir.name, folder_setup.mods_dir),
+        (src_data / folder_setup.game_backups_dir.name, folder_setup.game_backups_dir),
         (src_data / folder_setup.modsinfo_file.name, folder_setup.modsinfo_file),
         (src_config / folder_setup.app_settings_file.name, folder_setup.app_settings_file),
         (src_config / folder_setup.addon_metadata_file.name, folder_setup.addon_metadata_file),
+        (src_config / folder_setup.install_state_file.name, folder_setup.install_state_file),
     ]
+    optional_sources = {
+        src_data / folder_setup.game_backups_dir.name,
+        src_config / folder_setup.install_state_file.name,
+    }
 
     warnings: list[str] = []
     for src, dst in items:
         if src.resolve() == dst.resolve():
             continue
         if not src.exists():
-            warnings.append(f"Not present in source: {src.name}")
+            if src not in optional_sources:
+                warnings.append(f"Not present in source: {src.name}")
             continue
         try:
             delete(dst, not_exist_ok=True)

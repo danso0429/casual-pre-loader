@@ -5,6 +5,7 @@ import tempfile
 from pathlib import Path
 from unittest.mock import Mock, patch
 from valve_parsers import VPKFile
+from core.handlers import pcf_handler
 from core.handlers.pcf_handler import restore_particle_files
 
 
@@ -139,7 +140,8 @@ class TestVPKSafety:
                 current_content = temp_vpk_file.read_bytes()
                 assert current_content == original_content, "VPK file was partially corrupted"
 
-    def test_no_modification_without_backup_files(self, temp_vpk_file, mock_folder_setup):
+    def test_no_modification_without_backup_files(self, temp_vpk_file, mock_folder_setup, monkeypatch):
+        monkeypatch.setattr(pcf_handler, "folder_setup", mock_folder_setup)
         backup_particles = mock_folder_setup.backup_dir / "particles"
 
         if backup_particles.exists():
