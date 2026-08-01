@@ -66,6 +66,8 @@ class FolderConfig:
     # ruff: disable[function-call-in-dataclass-default-argument]
     backup_dir:    Path | Dep[Path] = Dep(lambda project_dir: project_dir / 'backup')
     """Location where sourcemod files are backed up to"""
+    game_backups_dir: Path | Dep[Path] = Dep(lambda project_dir: project_dir / 'game_backups')
+    """Location of verified per-game vanilla file backups captured from the current game install"""
     log_file:      Path | Dep[Path] = Dep(lambda project_dir: project_dir / 'casual-pre-loader.log')
     """File where logs are stored"""
     install_performance_file: Path | Dep[Path] = Dep(lambda project_dir: project_dir / 'install-performance.log')

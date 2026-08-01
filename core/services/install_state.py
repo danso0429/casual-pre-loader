@@ -273,7 +273,7 @@ class InstallStateStore:
 
     @staticmethod
     def _target_key(tf_path: Path | str) -> str:
-        normalized = os.path.normcase(os.path.abspath(str(tf_path)))
+        normalized = os.path.normcase(os.path.abspath(tf_path))
         return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
 
     @staticmethod
