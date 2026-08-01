@@ -85,11 +85,99 @@ def test_saved_install_state_recognizes_an_unchanged_install(tmp_path, monkeypat
     saved = json.loads(store.path.read_text(encoding="utf-8"))
     assert saved["schema"] == install_state.INSTALL_STATE_SCHEMA
 
+    target = next(iter(saved["targets"].values()))
+    for section in ("sources", "direct_game_inputs"):
+        for entry in target[section]:
+            if len(entry) == 4 and all(isinstance(value, int) for value in entry[1:]):
+                entry[3] += 1
+    store.path.write_text(json.dumps(saved), encoding="utf-8")
+    assert store.evaluate(
+        tf_path,
+        request,
+        ["addon"],
+        {"particle": "particle_mod"},
+    ) == (True, "up_to_date")
+
     (tf_path / "custom" / "runtime.vpk.sound.cache").write_bytes(b"runtime cache")
     assert store.evaluate(tf_path, request, ["addon"], {"particle": "particle_mod"}) == (
         True,
         "up_to_date",
     )
+
+
+def test_captured_install_inputs_reuse_one_addon_inventory(tmp_path, monkeypatch):
+    _setup_files(tmp_path, monkeypatch)
+    addon_dir = install_state.folder_setup.addons_dir / "addon"
+    direct_particle = addon_dir / "particles" / "effect.pcf"
+    direct_particle.parent.mkdir(parents=True)
+    direct_particle.write_bytes(b"direct")
+
+    inventory = install_state.capture_addon_inventory(["addon"])
+    late_file = addon_dir / "materials" / "added-after-scan.vtf"
+    late_file.write_bytes(b"late")
+    captured = install_state.capture_install_inputs(
+        ["addon"],
+        {"particle": "particle_mod"},
+        False,
+        addon_inventory=inventory,
+    )
+
+    source_labels = {entry[0] for entry in captured.sources}
+    direct_labels = {entry[0] for entry in captured.direct_game_inputs}
+    assert "addons/0/addon/materials/addon.vtf" in source_labels
+    assert "addons/0/addon/materials/added-after-scan.vtf" not in source_labels
+    assert "direct_addons/0/addon/particles/effect.pcf" in direct_labels
+    assert "direct_addons/0/addon/materials/addon.vtf" not in direct_labels
+
+
+def test_addon_inventory_keeps_personal4_state_entry_format(tmp_path, monkeypatch):
+    _setup_files(tmp_path, monkeypatch)
+    addon_dir = install_state.folder_setup.addons_dir / "addon"
+    skybox = addon_dir / "materials" / "skybox" / "sky.vmt"
+    skybox.parent.mkdir(parents=True)
+    skybox.write_bytes(b"sky")
+    particle = addon_dir / "particles" / "effect.pcf"
+    particle.parent.mkdir(parents=True)
+    particle.write_bytes(b"particle")
+
+    inventory = install_state.capture_addon_inventory(["addon"])
+    parallel_inventory = install_state.capture_addon_inventory(
+        ["addon", "addon"],
+        scan_workers=2,
+    )
+    assert [addon.index for addon in parallel_inventory.addons] == [0, 1]
+    assert parallel_inventory.addons[0].files == parallel_inventory.addons[1].files
+    assert parallel_inventory.workers == 2
+    captured = install_state.capture_install_inputs(
+        ["addon"],
+        {},
+        False,
+        addon_inventory=inventory,
+    )
+    legacy_source = install_state._tree_entries(
+        addon_dir,
+        "addons/0/addon",
+        lambda path: path.name != "sound.cache",
+    )
+    legacy_direct = install_state._tree_entries(
+        addon_dir,
+        "direct_addons/0/addon",
+        lambda path: path.suffix.casefold() == ".pcf"
+        or (
+            path.relative_to(addon_dir)
+            .as_posix()
+            .casefold()
+            .startswith("materials/skybox/")
+            and path.suffix.casefold() == ".vmt"
+        ),
+    )[1:]
+
+    assert [entry for entry in captured.sources if entry[0].startswith("addons/")] == legacy_source
+    assert [
+        entry
+        for entry in captured.direct_game_inputs
+        if entry[0].startswith("direct_addons/")
+    ] == legacy_direct
 
 
 def test_source_external_and_managed_output_changes_invalidate_state(tmp_path, monkeypatch):

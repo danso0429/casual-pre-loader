@@ -2,8 +2,12 @@ import hashlib
 import json
 import logging
 import os
+import stat
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import nullcontext
+from dataclasses import dataclass
 from pathlib import Path
+from time import perf_counter
 from typing import TYPE_CHECKING, Callable
 
 from core.constants import BACKUP_MAINMENU_FOLDER, CUSTOM_VPK_NAME
@@ -19,6 +23,37 @@ if TYPE_CHECKING:
 INSTALL_STATE_SCHEMA = 1
 INSTALL_RECIPE_VERSION = 2
 DIRECT_GAME_COMPATIBLE_RECIPE_UPGRADES = {(1, 2)}
+MAX_ADDON_SCAN_WORKERS = 8
+
+
+@dataclass(frozen=True)
+class AddonInventoryFile:
+    path: Path
+    relative: Path
+    size: int
+    mtime_ns: int
+    ctime_ns: int
+
+
+@dataclass(frozen=True)
+class AddonInventoryEntry:
+    index: int
+    name: str
+    directory: Path
+    exists: bool
+    files: tuple[AddonInventoryFile, ...]
+
+
+@dataclass(frozen=True)
+class AddonInventory:
+    addons: tuple[AddonInventoryEntry, ...]
+    workers: int = 1
+
+
+@dataclass(frozen=True)
+class CapturedInstallInputs:
+    sources: list[list]
+    direct_game_inputs: list[list] | None
 
 
 def _measure(profiler, category: str, label: str):
@@ -33,6 +68,32 @@ def _request_identity(request: dict) -> dict:
     identity = dict(request)
     identity.pop("app_version", None)
     return identity
+
+
+def _stable_file_entries_match(previous: object, current: object) -> bool:
+    """Compare portable file identity while ignoring copy-specific ctime."""
+    if (
+        not isinstance(previous, list)
+        or not isinstance(current, list)
+        or len(previous) != len(current)
+    ):
+        return False
+
+    def stable(entry):
+        if (
+            isinstance(entry, list)
+            and len(entry) == 4
+            and isinstance(entry[0], str)
+            and isinstance(entry[1], int)
+            and isinstance(entry[2], int)
+            and isinstance(entry[3], int)
+        ):
+            return entry[:3]
+        return entry
+
+    return [stable(entry) for entry in previous] == [
+        stable(entry) for entry in current
+    ]
 
 
 def _direct_game_recipes_are_compatible(previous: dict, current: dict) -> bool:
@@ -77,6 +138,135 @@ def _file_entry(path: Path, label: str) -> list:
     return [label, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns]
 
 
+def _inventory_file_entry(file: AddonInventoryFile, label: str) -> list:
+    return [label, file.size, file.mtime_ns, file.ctime_ns]
+
+
+def capture_addon_inventory(
+    selected_addons: list[str],
+    *,
+    addons_dir: Path | None = None,
+    profiler: "StageTimer | None" = None,
+    operation_category: str = "state_addon_inventory",
+    scan_workers: int | None = None,
+) -> AddonInventory:
+    """Read each selected addon tree once and retain its file metadata."""
+    if addons_dir is None:
+        addons_dir = folder_setup.addons_dir
+    default_workers = MAX_ADDON_SCAN_WORKERS if os.name == "nt" else 1
+    requested_workers = default_workers if scan_workers is None else max(1, scan_workers)
+    workers = min(requested_workers, max(1, len(selected_addons)))
+
+    def capture_one(job):
+        index, addon_name = job
+        addon_dir = addons_dir / addon_name
+        started_at = perf_counter()
+        files = []
+        total_bytes = 0
+
+        if addon_dir.is_dir():
+            for root, dir_names, file_names in os.walk(addon_dir):
+                dir_names.sort(key=str.casefold)
+                file_names.sort(key=str.casefold)
+                root_path = Path(root)
+                for file_name in file_names:
+                    path = root_path / file_name
+                    try:
+                        file_stat = path.stat()
+                    except OSError:
+                        continue
+                    if not stat.S_ISREG(file_stat.st_mode):
+                        continue
+                    relative = path.relative_to(addon_dir)
+                    files.append(
+                        AddonInventoryFile(
+                            path=path,
+                            relative=relative,
+                            size=file_stat.st_size,
+                            mtime_ns=file_stat.st_mtime_ns,
+                            ctime_ns=file_stat.st_ctime_ns,
+                        )
+                    )
+                    total_bytes += file_stat.st_size
+
+        files.sort(key=lambda item: item.relative.as_posix().casefold())
+        return (
+            AddonInventoryEntry(
+                index=index,
+                name=addon_name,
+                directory=addon_dir,
+                exists=addon_dir.is_dir(),
+                files=tuple(files),
+            ),
+            total_bytes,
+            perf_counter() - started_at,
+        )
+
+    jobs = list(enumerate(selected_addons))
+    if workers == 1:
+        results = [capture_one(job) for job in jobs]
+    else:
+        with ThreadPoolExecutor(
+            max_workers=workers,
+            thread_name_prefix="preloader-addon-scan",
+        ) as executor:
+            results = list(executor.map(capture_one, jobs))
+
+    addons = []
+    for addon, total_bytes, duration in results:
+        addons.append(addon)
+        if profiler is not None:
+            profiler.record_operation(
+                operation_category,
+                f"{addon.name} files={len(addon.files)}",
+                duration,
+                size_bytes=total_bytes,
+            )
+
+    return AddonInventory(addons=tuple(addons), workers=workers)
+
+
+def _source_entries_from_inventory(inventory: AddonInventory) -> list[list]:
+    entries = []
+    for addon in inventory.addons:
+        label = f"addons/{addon.index}/{addon.name}"
+        if not addon.exists:
+            entries.append([label, "missing"])
+            continue
+        entries.append([f"{label}/", "directory"])
+        for file in addon.files:
+            if file.path.name == "sound.cache":
+                continue
+            entries.append(
+                _inventory_file_entry(
+                    file,
+                    f"{label}/{file.relative.as_posix()}",
+                )
+            )
+    return entries
+
+
+def _direct_entries_from_inventory(inventory: AddonInventory) -> list[list]:
+    entries = []
+    for addon in inventory.addons:
+        label = f"direct_addons/{addon.index}/{addon.name}"
+        for file in addon.files:
+            relative = file.relative.as_posix()
+            relative_lower = relative.casefold()
+            if file.path.suffix.casefold() != ".pcf" and not (
+                relative_lower.startswith("materials/skybox/")
+                and file.path.suffix.casefold() == ".vmt"
+            ):
+                continue
+            entries.append(
+                _inventory_file_entry(
+                    file,
+                    f"{label}/{relative}",
+                )
+            )
+    return entries
+
+
 def _tree_entries(
     root: Path,
     label: str,
@@ -99,18 +289,14 @@ def capture_source_state(
     selected_addons: list[str],
     particle_selections: dict[str, str],
     profiler: "StageTimer | None" = None,
+    addon_inventory: AddonInventory | None = None,
 ) -> list[list]:
-    entries = []
-    for index, addon_name in enumerate(selected_addons):
-        addon_dir = folder_setup.addons_dir / addon_name
-        with _measure(profiler, "state_source_addon", addon_name):
-            entries.extend(
-                _tree_entries(
-                    addon_dir,
-                    f"addons/{index}/{addon_name}",
-                    lambda path: path.name != "sound.cache",
-                )
-            )
+    if addon_inventory is None:
+        addon_inventory = capture_addon_inventory(
+            selected_addons,
+            profiler=profiler,
+        )
+    entries = _source_entries_from_inventory(addon_inventory)
 
     for mod_name in sorted(set(particle_selections.values())):
         particle_mod_dir = folder_setup.particles_dir / mod_name
@@ -221,30 +407,18 @@ def capture_direct_game_inputs(
     particle_selections: dict[str, str],
     disable_paint_colors: bool,
     profiler: "StageTimer | None" = None,
+    addon_inventory: AddonInventory | None = None,
 ) -> list[list]:
     entries = [
         ["disable_paint_colors", disable_paint_colors],
         ["particle_selections", [list(item) for item in sorted(particle_selections.items())]],
     ]
-
-    for index, addon_name in enumerate(selected_addons):
-        addon_dir = folder_setup.addons_dir / addon_name
-
-        def include_direct_addon_file(path: Path) -> bool:
-            relative = path.relative_to(addon_dir).as_posix().casefold()
-            return path.suffix.casefold() == ".pcf" or (
-                relative.startswith("materials/skybox/")
-                and path.suffix.casefold() == ".vmt"
-            )
-
-        with _measure(profiler, "state_direct_addon", addon_name):
-            entries.extend(
-                _tree_entries(
-                    addon_dir,
-                    f"direct_addons/{index}/{addon_name}",
-                    include_direct_addon_file,
-                )[1:]
-            )
+    if addon_inventory is None:
+        addon_inventory = capture_addon_inventory(
+            selected_addons,
+            profiler=profiler,
+        )
+    entries.extend(_direct_entries_from_inventory(addon_inventory))
 
     for particle_name, mod_name in sorted(particle_selections.items()):
         source_path = (
@@ -285,6 +459,43 @@ def capture_direct_game_inputs(
         _file_entry(folder_setup.particle_system_map_file, "particle_system_map.json")
     )
     return entries
+
+
+def capture_install_inputs(
+    selected_addons: list[str],
+    particle_selections: dict[str, str],
+    disable_paint_colors: bool,
+    *,
+    include_direct_game: bool = True,
+    profiler: "StageTimer | None" = None,
+    addon_inventory: AddonInventory | None = None,
+) -> CapturedInstallInputs:
+    if addon_inventory is None:
+        addon_inventory = capture_addon_inventory(
+            selected_addons,
+            profiler=profiler,
+        )
+    sources = capture_source_state(
+        selected_addons,
+        particle_selections,
+        profiler=profiler,
+        addon_inventory=addon_inventory,
+    )
+    direct_game_inputs = (
+        capture_direct_game_inputs(
+            selected_addons,
+            particle_selections,
+            disable_paint_colors,
+            profiler=profiler,
+            addon_inventory=addon_inventory,
+        )
+        if include_direct_game
+        else None
+    )
+    return CapturedInstallInputs(
+        sources=sources,
+        direct_game_inputs=direct_game_inputs,
+    )
 
 
 def capture_direct_game_output(tf_path: Path | str) -> list[list]:
@@ -345,6 +556,7 @@ class InstallStateStore:
         selected_addons: list[str],
         particle_selections: dict[str, str],
         profiler: "StageTimer | None" = None,
+        captured_inputs: CapturedInstallInputs | None = None,
     ) -> tuple[bool, str]:
         with _measure(profiler, "state_load", "install_state.json"):
             target = self._load()["targets"].get(self._target_key(tf_path))
@@ -354,10 +566,19 @@ class InstallStateStore:
             request_header
         ):
             return False, "request_changed"
-        if target.get("sources") != capture_source_state(
-            selected_addons,
-            particle_selections,
-            profiler=profiler,
+        if captured_inputs is None:
+            captured_inputs = capture_install_inputs(
+                selected_addons,
+                particle_selections,
+                request_header["options"]["disable_paint_colors"],
+                include_direct_game=(
+                    request_header.get("game_target") == "Team Fortress 2"
+                ),
+                profiler=profiler,
+            )
+        if not _stable_file_entries_match(
+            target.get("sources"),
+            captured_inputs.sources,
         ):
             return False, "source_files_changed"
 
@@ -371,11 +592,9 @@ class InstallStateStore:
         if target.get("outputs") != managed_outputs:
             return False, "managed_outputs_changed"
         if request_header.get("game_target") == "Team Fortress 2":
-            if target.get("direct_game_inputs") != capture_direct_game_inputs(
-                selected_addons,
-                particle_selections,
-                request_header["options"]["disable_paint_colors"],
-                profiler=profiler,
+            if not _stable_file_entries_match(
+                target.get("direct_game_inputs"),
+                captured_inputs.direct_game_inputs,
             ):
                 return False, "direct_game_inputs_changed"
             with _measure(profiler, "state_direct_output", "game VPK"):
@@ -457,6 +676,7 @@ class InstallStateStore:
         particle_selections: dict[str, str],
         disable_paint_colors: bool,
         profiler: "StageTimer | None" = None,
+        captured_inputs: CapturedInstallInputs | None = None,
     ) -> bool:
         target = self._load()["targets"].get(self._target_key(tf_path))
         if target is None:
@@ -470,13 +690,18 @@ class InstallStateStore:
         if not _direct_game_recipes_are_compatible(previous_request, request_header):
             return False
 
-        return (
-            target.get("direct_game_inputs")
-            == capture_direct_game_inputs(
+        if captured_inputs is None:
+            captured_inputs = capture_install_inputs(
                 selected_addons,
                 particle_selections,
                 disable_paint_colors,
                 profiler=profiler,
+            )
+
+        return (
+            _stable_file_entries_match(
+                target.get("direct_game_inputs"),
+                captured_inputs.direct_game_inputs,
             )
             and target.get("direct_game_output") == capture_direct_game_output(tf_path)
         )
@@ -489,15 +714,20 @@ class InstallStateStore:
         particle_selections: dict[str, str],
         precache_models: set[str] | None = None,
         profiler: "StageTimer | None" = None,
+        captured_inputs: CapturedInstallInputs | None = None,
     ) -> None:
         with _measure(profiler, "state_load", "install_state.json"):
             state = self._load()
         is_tf2 = request_header.get("game_target") == "Team Fortress 2"
-        sources = capture_source_state(
-            selected_addons,
-            particle_selections,
-            profiler=profiler,
-        )
+        if captured_inputs is None:
+            captured_inputs = capture_install_inputs(
+                selected_addons,
+                particle_selections,
+                request_header["options"]["disable_paint_colors"],
+                include_direct_game=is_tf2,
+                profiler=profiler,
+            )
+        sources = captured_inputs.sources
         with _measure(profiler, "state_external_custom", "tf/custom"):
             external_custom = capture_external_custom_state(Path(tf_path) / "custom")
         with _measure(profiler, "state_managed_outputs", "managed outputs"):
@@ -508,16 +738,7 @@ class InstallStateStore:
                 if precache_models is not None
                 else None
             )
-        direct_game_inputs = (
-            capture_direct_game_inputs(
-                selected_addons,
-                particle_selections,
-                request_header["options"]["disable_paint_colors"],
-                profiler=profiler,
-            )
-            if is_tf2
-            else None
-        )
+        direct_game_inputs = captured_inputs.direct_game_inputs if is_tf2 else None
         with _measure(profiler, "state_direct_output", "game VPK"):
             direct_game_output = capture_direct_game_output(tf_path) if is_tf2 else None
 
