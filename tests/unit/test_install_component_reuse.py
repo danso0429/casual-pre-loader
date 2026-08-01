@@ -18,6 +18,7 @@ def test_install_reuses_direct_game_patches_for_a_texture_only_change(tmp_path, 
     temp_dir = tmp_path / "temp"
     folder_setup = SimpleNamespace(
         install_state_file=tmp_path / "install_state.json",
+        install_performance_file=tmp_path / "install-performance.log",
         addons_dir=addons_dir,
         temp_dir=temp_dir,
         temp_to_be_referenced_dir=temp_dir / "to_be_referenced",

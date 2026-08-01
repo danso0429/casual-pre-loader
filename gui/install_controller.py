@@ -3,6 +3,7 @@ import threading
 
 from PyQt6.QtCore import QObject, pyqtSignal
 
+from core.folder_setup import folder_setup
 from core.services.install import InstallService
 from core.util.sourcemod import validate_game_directory
 
@@ -62,10 +63,11 @@ class InstallController(QObject):
                 game_target=game_target,
                 particle_selections=particle_selections,
             )
+            report_note = f"\n\nPerformance report:\n{folder_setup.install_performance_file}"
             if installed:
-                self.operation_success.emit("Mods installed successfully!")
+                self.operation_success.emit(f"Mods installed successfully!{report_note}")
             else:
-                self.operation_success.emit("Mods are already up to date!")
+                self.operation_success.emit(f"Mods are already up to date!{report_note}")
             self._on_progress(0, "Installation complete")
 
         except Exception as e:

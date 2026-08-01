@@ -117,7 +117,11 @@ class InstallService:
         """
 
         self.cancel_requested = False
-        timer = StageTimer(log, "install")
+        timer = StageTimer(
+            log,
+            "install",
+            report_path=folder_setup.install_performance_file,
+        )
         state_store = InstallStateStore(folder_setup.install_state_file)
 
         def progress(pct: int, msg: str):
@@ -194,6 +198,9 @@ class InstallService:
             for addon_index, addon_path in enumerate(selected_addons):
                 addon_dir = folder_setup.addons_dir / addon_path
                 if addon_dir.exists() and addon_dir.is_dir():
+                    addon_scan_started = timer.start_operation()
+                    addon_file_count = 0
+                    addon_bytes = 0
                     mod_json_path = addon_dir / 'mod.json'
                     if mod_json_path.exists():
                         try:
@@ -204,6 +211,11 @@ class InstallService:
 
                                     if hud_addons.get(addon_path) is None:
                                         hud_addons[addon_path] = addon_dir
+                                        timer.end_operation(
+                                            "scan_addon",
+                                            addon_dir.name,
+                                            addon_scan_started,
+                                        )
                                         continue
                                     else:
                                         raise Exception(f"There are 2 mods that have directory names which resolve to the same case-insensitive name:\n'{hud_addons[addon_path].name}'\n'{addon_dir.name}'")
@@ -219,11 +231,24 @@ class InstallService:
                                 src_path.suffix == '.txt'):
                                 continue
                             total_files += 1
+                            src_size = 0
                             try:
-                                total_bytes += src_path.stat().st_size
+                                src_size = src_path.stat().st_size
+                                total_bytes += src_size
                             except OSError:
                                 pass
-                            files_to_copy.append((src_path, addon_dir, addon_index))
+                            addon_file_count += 1
+                            addon_bytes += src_size
+                            source_label = f"{addon_dir.name}/{rel_path.as_posix()}"
+                            timer.record_inventory("selected-addon", source_label, src_size)
+                            files_to_copy.append((src_path, addon_dir, addon_index, src_size))
+
+                    timer.end_operation(
+                        "scan_addon",
+                        f"{addon_dir.name} files={addon_file_count}",
+                        addon_scan_started,
+                        size_bytes=addon_bytes,
+                    )
 
             self._check_cancelled()
             timer.checkpoint(
@@ -247,7 +272,8 @@ class InstallService:
                     if hud_dest.exists():
                         log.info(f'{hud_dest} already exists, skipping as to not overwrite possible user-modified files')
                         continue
-                    copy(addon_dir, hud_dest)
+                    with timer.measure("copy_hud", addon_dir.name):
+                        copy(addon_dir, hud_dest)
 
                     hud_mod_json = hud_dest / 'mod.json'
                     if hud_mod_json.exists():
@@ -271,7 +297,7 @@ class InstallService:
             self._check_cancelled()
 
             if particle_selections is not None:
-                stage_particle_selections(particle_selections)
+                stage_particle_selections(particle_selections, profiler=timer)
             elif apply_particle_selections:
                 apply_particle_selections()
             timer.checkpoint("apply_particle_selections")
@@ -286,7 +312,7 @@ class InstallService:
                 completed_files = 0
                 progress(10, f"Installing addons... (0/{total_files} files)")
 
-                for src_path, addon_dir, addon_index in files_to_copy:
+                for src_path, addon_dir, addon_index, src_size in files_to_copy:
                     self._check_cancelled()
 
                     rel_path = src_path.relative_to(addon_dir)
@@ -295,7 +321,13 @@ class InstallService:
                     else:
                         dest_path = folder_setup.temp_to_be_vpk_dir / rel_path
 
-                    copy(src_path, dest_path)
+                    source_label = f"{addon_dir.name}/{rel_path.as_posix()}"
+                    with timer.measure(
+                        "copy_addon_file",
+                        source_label,
+                        size_bytes=src_size,
+                    ):
+                        copy(src_path, dest_path)
                     file_origin[dest_path] = addon_index
 
                     completed_files += 1
@@ -317,7 +349,8 @@ class InstallService:
                     sound_result = self.sound_handler.process_temp_sound_mods(
                         folder_setup.temp_to_be_vpk_dir,
                         backup_scripts_dir,
-                        vpk_paths
+                        vpk_paths,
+                        profiler=timer,
                     )
                     if sound_result:
                         progress(50, sound_result['message'])
@@ -372,10 +405,21 @@ class InstallService:
                     self._check_cancelled()
 
                     base_name = pcf_file.name
+                    particle_started = timer.start_operation()
+                    try:
+                        particle_size = pcf_file.stat().st_size
+                    except OSError:
+                        particle_size = 0
 
                     mod_pcf = PCFFile(pcf_file).decode()
 
                     if base_name != base_default_pcf.input_file.name and check_parents(mod_pcf, base_default_parents):
+                        timer.end_operation(
+                            "process_particle_file",
+                            base_name,
+                            particle_started,
+                            size_bytes=particle_size,
+                        )
                         continue
 
                     if base_name == base_default_pcf.input_file.name:
@@ -397,6 +441,12 @@ class InstallService:
                     completed_files += 1
                     current_progress = start_progress + int((completed_files / total_files) * progress_range)
                     progress(current_progress, f"Processing particle files... ({completed_files}/{total_files})")
+                    timer.end_operation(
+                        "process_particle_file",
+                        base_name,
+                        particle_started,
+                        size_bytes=particle_size,
+                    )
             elif not is_tf2:
                 particle_files = list(folder_setup.temp_to_be_patched_dir.glob("*.pcf"))
                 if particle_files:
@@ -411,7 +461,16 @@ class InstallService:
                     for i, pcf_file in enumerate(particle_files):
                         self._check_cancelled()
 
-                        move(pcf_file, particles_dir / pcf_file.name)
+                        try:
+                            particle_size = pcf_file.stat().st_size
+                        except OSError:
+                            particle_size = 0
+                        with timer.measure(
+                            "copy_particle_file",
+                            pcf_file.name,
+                            size_bytes=particle_size,
+                        ):
+                            move(pcf_file, particles_dir / pcf_file.name)
 
                         current_progress = start_progress + int(((i + 1) / total_files) * progress_range)
                         progress(current_progress, f"Copying particle files... ({i + 1}/{total_files})")
@@ -452,6 +511,29 @@ class InstallService:
                 generate_missing_vmt_files(custom_content_dir, tf_path)
             timer.checkpoint("prepare_custom_content")
 
+            vpk_input_files = 0
+            vpk_input_bytes = 0
+            if custom_content_dir.exists():
+                for input_path in custom_content_dir.glob("**/*"):
+                    if not input_path.is_file():
+                        continue
+                    try:
+                        input_size = input_path.stat().st_size
+                    except OSError:
+                        input_size = 0
+                    vpk_input_files += 1
+                    vpk_input_bytes += input_size
+                    timer.record_inventory(
+                        "custom-vpk",
+                        input_path.relative_to(custom_content_dir).as_posix(),
+                        input_size,
+                    )
+            timer.checkpoint(
+                "inventory_custom_vpk",
+                files=vpk_input_files,
+                bytes=vpk_input_bytes,
+            )
+
             for split_file in custom_dir.glob(f"{CUSTOM_VPK_SPLIT_PATTERN}*.vpk"):
                 split_file.unlink()
                 cache_file = custom_dir / (split_file.name + ".sound.cache")
@@ -486,7 +568,10 @@ class InstallService:
                 else:
                     progress(85, "Scanning for models to precache...")
 
-                    precache_prop_set = make_precache_list(str(Path(tf_path).parents[0]))
+                    precache_prop_set = make_precache_list(
+                        str(Path(tf_path).parents[0]),
+                        profiler=timer,
+                    )
                     precache_models_for_state = precache_prop_set
                     precache_model_count = len(precache_prop_set)
                     if request_header is not None:
@@ -541,7 +626,11 @@ class InstallService:
 
             progress(97, "Finalizing...")
 
-            get_from_custom_dir(custom_dir, skip_paths=reusable_external_custom_paths)
+            get_from_custom_dir(
+                custom_dir,
+                skip_paths=reusable_external_custom_paths,
+                profiler=timer,
+            )
             timer.checkpoint(
                 "finalize_custom_content",
                 reused=len(reusable_external_custom_paths),
@@ -561,9 +650,11 @@ class InstallService:
             return True
 
         finally:
-            prepare_working_copy()
-            timer.checkpoint("reset_working_copy")
-            timer.finish()
+            try:
+                prepare_working_copy()
+            finally:
+                timer.checkpoint("reset_working_copy")
+                timer.finish()
 
     def uninstall(self, tf_path: str, on_progress: Optional[ProgressCallback] = None, game_target: str = "Team Fortress 2"):
         # resets everything

@@ -46,8 +46,9 @@ class FolderConfig:
             'backup_dir': lambda self: self.project_dir / 'backup',
             'mods_dir':   lambda self: self.project_dir / 'mods',
 
-            'log_file':      lambda self: self.project_dir / 'casual-pre-loader.log',
-            'modsinfo_file': lambda self: self.project_dir / 'modsinfo.json',
+            'log_file':                    lambda self: self.project_dir / 'casual-pre-loader.log',
+            'install_performance_file':    lambda self: self.project_dir / 'install-performance.log',
+            'modsinfo_file':               lambda self: self.project_dir / 'modsinfo.json',
         },
         'mods_dir': {
             'particles_dir': lambda self: self.mods_dir / 'particles',

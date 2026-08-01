@@ -1,11 +1,26 @@
 import logging
+from contextlib import nullcontext
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from valve_parsers import PCFFile, VPKFile
 
 from core.handlers.pcf_handler import get_parent_elements
 
 log = logging.getLogger()
+
+if TYPE_CHECKING:
+    from core.util.perf import StageTimer
+
+
+def _measure_file(profiler, category: str, label: str, path: Path):
+    try:
+        size_bytes = path.stat().st_size
+    except OSError:
+        size_bytes = 0
+    if profiler is None:
+        return nullcontext()
+    return profiler.measure(category, label, size_bytes=size_bytes)
 
 
 def pcf_empty_root_processor():
@@ -151,7 +166,11 @@ def get_from_file(file_path: Path):
         return 0
 
 
-def get_from_custom_dir(custom_dir: Path, skip_paths: set[str] | None = None):
+def get_from_custom_dir(
+    custom_dir: Path,
+    skip_paths: set[str] | None = None,
+    profiler: "StageTimer | None" = None,
+):
     if not custom_dir.exists():
         return 0
 
@@ -161,7 +180,13 @@ def get_from_custom_dir(custom_dir: Path, skip_paths: set[str] | None = None):
     for vpk_file in custom_dir.glob("*.vpk"):
         if vpk_file.relative_to(custom_dir).as_posix() in skip_paths:
             continue
-        get_from_vpk(vpk_file)
+        with _measure_file(
+            profiler,
+            "finalize_custom_vpk",
+            vpk_file.name,
+            vpk_file,
+        ):
+            get_from_vpk(vpk_file)
 
     target_paths = [
         "materials/effects/",
@@ -182,4 +207,10 @@ def get_from_custom_dir(custom_dir: Path, skip_paths: set[str] | None = None):
                         custom_rel_path not in skip_paths
                         and any(rel_path.startswith(target) for target in target_paths)
                     ):
-                        get_from_file(file_path)
+                        with _measure_file(
+                            profiler,
+                            "finalize_custom_file",
+                            custom_rel_path,
+                            file_path,
+                        ):
+                            get_from_file(file_path)

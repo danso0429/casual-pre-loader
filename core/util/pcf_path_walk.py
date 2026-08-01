@@ -1,5 +1,7 @@
 import logging
+from contextlib import nullcontext
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from valve_parsers import PCFFile
 
@@ -12,6 +14,9 @@ from core.operations.pcf_rebuild import (
     load_particle_system_map,
 )
 from core.util.file import copy
+
+if TYPE_CHECKING:
+    from core.util.perf import StageTimer
 
 log = logging.getLogger()
 
@@ -134,7 +139,20 @@ def get_mod_particles() -> tuple[dict[str, list[str]], list[str]]:
     return mod_particles, sorted(list(all_particles))
 
 
-def apply_particle_selections(selections: dict) -> bool:
+def _measure_file(profiler, category: str, label: str, path: Path):
+    try:
+        size_bytes = path.stat().st_size
+    except OSError:
+        size_bytes = 0
+    if profiler is None:
+        return nullcontext()
+    return profiler.measure(category, label, size_bytes=size_bytes)
+
+
+def apply_particle_selections(
+    selections: dict,
+    profiler: "StageTimer | None" = None,
+) -> bool:
     # particle mod installer
     required_materials = set()
 
@@ -150,22 +168,28 @@ def apply_particle_selections(selections: dict) -> bool:
                 if selected_mod == mod_name:
                     source_file = source_particles_dir / f"{particle_file}.pcf"
                     if source_file.exists():
-                        # copy particle file to to_be_patched
-                        copy(source_file, folder_setup.temp_to_be_patched_dir / f"{particle_file}.pcf")
-                        # get particle file mats from attrib
-                        pcf = PCFFile(source_file).decode()
-                        system_defs = pcf.get_elements_by_type('DmeParticleSystemDefinition')
-                        for element in system_defs:
-                            material_value = pcf.get_attribute_value(element, 'material')
-                            if material_value and isinstance(material_value, bytes):
-                                material_path = material_value.decode('ascii')
-                                # ignore vgui/white
-                                if material_path == 'vgui/white':
-                                    continue
-                                if material_path.endswith('.vmt'):
-                                    required_materials.add(material_path)
-                                else:
-                                    required_materials.add(material_path + ".vmt")
+                        with _measure_file(
+                            profiler,
+                            "select_particle_file",
+                            f"{mod_name}/{source_file.name}",
+                            source_file,
+                        ):
+                            # copy particle file to to_be_patched
+                            copy(source_file, folder_setup.temp_to_be_patched_dir / f"{particle_file}.pcf")
+                            # get particle file mats from attrib
+                            pcf = PCFFile(source_file).decode()
+                            system_defs = pcf.get_elements_by_type('DmeParticleSystemDefinition')
+                            for element in system_defs:
+                                material_value = pcf.get_attribute_value(element, 'material')
+                                if material_value and isinstance(material_value, bytes):
+                                    material_path = material_value.decode('ascii')
+                                    # ignore vgui/white
+                                    if material_path == 'vgui/white':
+                                        continue
+                                    if material_path.endswith('.vmt'):
+                                        required_materials.add(material_path)
+                                    else:
+                                        required_materials.add(material_path + ".vmt")
 
     for mod_name in used_mods:
         mod_dir = folder_setup.particles_dir / mod_name
@@ -174,14 +198,26 @@ def apply_particle_selections(selections: dict) -> bool:
             full_material_path = mod_dir / 'materials' / material_path.replace('\\', '/')
             if full_material_path.exists():
                 material_destination = folder_setup.temp_to_be_vpk_dir / Path(full_material_path).relative_to(mod_dir)
-                copy(full_material_path, material_destination)
-                texture_paths = get_vmt_dependencies(full_material_path)
+                with _measure_file(
+                    profiler,
+                    "copy_particle_material",
+                    f"{mod_name}/{full_material_path.relative_to(mod_dir).as_posix()}",
+                    full_material_path,
+                ):
+                    copy(full_material_path, material_destination)
+                    texture_paths = get_vmt_dependencies(full_material_path)
                 if texture_paths:
                     for texture_path in texture_paths:
                         full_texture_path = mod_dir / 'materials' / str(texture_path).replace('\\', '/')
                         if full_texture_path.exists():
                             texture_destination = folder_setup.temp_to_be_vpk_dir / Path(full_texture_path).relative_to(mod_dir)
-                            copy(full_texture_path, texture_destination)
+                            with _measure_file(
+                                profiler,
+                                "copy_particle_texture",
+                                f"{mod_name}/{full_texture_path.relative_to(mod_dir).as_posix()}",
+                                full_texture_path,
+                            ):
+                                copy(full_texture_path, texture_destination)
 
     # merge split files back into original files
     for original_file, split_defs in PARTICLE_SPLITS.items():
