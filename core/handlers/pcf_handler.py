@@ -2,6 +2,7 @@ import hashlib
 import logging
 import os
 import zlib
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -18,6 +19,12 @@ if TYPE_CHECKING:
 
 class ParticleBackupMismatchError(RuntimeError):
     pass
+
+
+@dataclass(frozen=True)
+class ParticleRestorePlan:
+    vpk: VPKFile
+    files: tuple[tuple[str, str, bytes], ...]
 
 
 def get_game_particle_backup_dir(tf_path: Path | str) -> Path:
@@ -82,24 +89,24 @@ def _verified_particle_backup(
         temp_path.unlink(missing_ok=True)
 
 
-def restore_particle_files(
+def prepare_particle_restore(
     tf_path: Path | str,
     profiler: "StageTimer | None" = None,
-) -> int:
+) -> ParticleRestorePlan | None:
     backup_particles_dir = folder_setup.backup_dir / "particles"
     if not backup_particles_dir.exists():
         log.error("missing backup dir/")
-        return 0
+        return None
 
     vpk_name = get_vpk_name(tf_path)
     vpk_path = Path(tf_path) / vpk_name
     if not vpk_path.exists():
         log.error(f"missing {vpk_name}, is the path correct?")
-        return 0
+        return None
 
     vpk = VPKFile(vpk_path)
     dynamic_backup_dir = get_game_particle_backup_dir(tf_path)
-    patched_count = 0
+    verified_files = []
 
     for pcf_file in sorted(
         backup_particles_dir.glob("*.pcf"),
@@ -116,13 +123,7 @@ def restore_particle_files(
                 pcf_file,
                 dynamic_backup_dir / file_name,
             )
-
-            if vpk.patch_file(file_path, original_content, create_backup=False):
-                patched_count += 1
-            else:
-                raise ParticleBackupMismatchError(
-                    f"Failed to restore verified particle file {file_path}."
-                )
+            verified_files.append((file_name, file_path, original_content))
 
         except ParticleBackupMismatchError:
             raise
@@ -138,13 +139,50 @@ def restore_particle_files(
                 except OSError:
                     backup_size = 0
                 profiler.end_operation(
-                    "restore_particle_file",
+                    "verify_particle_backup",
                     file_name,
                     started_at,
                     size_bytes=backup_size,
                 )
 
+    return ParticleRestorePlan(vpk=vpk, files=tuple(verified_files))
+
+
+def apply_particle_restore(
+    plan: ParticleRestorePlan | None,
+    profiler: "StageTimer | None" = None,
+) -> int:
+    if plan is None:
+        return 0
+
+    patched_count = 0
+    for file_name, file_path, original_content in plan.files:
+        started_at = profiler.start_operation() if profiler is not None else None
+        try:
+            if plan.vpk.patch_file(file_path, original_content, create_backup=False):
+                patched_count += 1
+            else:
+                raise ParticleBackupMismatchError(
+                    f"Failed to restore verified particle file {file_path}."
+                )
+        finally:
+            if profiler is not None and started_at is not None:
+                profiler.end_operation(
+                    "restore_particle_file",
+                    file_name,
+                    started_at,
+                    size_bytes=len(original_content),
+                )
+
     return patched_count
+
+
+def restore_particle_files(
+    tf_path: Path | str,
+    profiler: "StageTimer | None" = None,
+) -> int:
+    plan = prepare_particle_restore(tf_path, profiler=profiler)
+    return apply_particle_restore(plan, profiler=profiler)
 
 
 def get_parent_elements(pcf: PCFFile) -> set[str]:

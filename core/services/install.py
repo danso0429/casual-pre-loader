@@ -17,7 +17,9 @@ from core.folder_setup import folder_setup
 from core.handlers.file_handler import FileHandler, copy_config_files, generate_config
 from core.handlers.paint_handler import disable_paints, enable_paints
 from core.handlers.pcf_handler import (
+    apply_particle_restore,
     check_parents,
+    prepare_particle_restore,
     restore_particle_files,
     update_materials,
 )
@@ -184,13 +186,29 @@ class InstallService:
             file_handler = None
             base_default_pcf = None
             base_default_parents = None
+            particle_restore_plan = None
             if is_tf2:
                 working_vpk_path = Path(tf_path) / get_vpk_name(tf_path)
                 if not check_writable(working_vpk_path):
                     raise PermissionError("Please close TF2 before installing.")
                 if not direct_game_files_reused:
+                    try:
+                        particle_restore_plan = prepare_particle_restore(
+                            tf_path,
+                            profiler=timer,
+                        )
+                    finally:
+                        timer.checkpoint(
+                            "preflight_particle_backups",
+                            required=True,
+                        )
                     file_handler = FileHandler(str(working_vpk_path))
                     base_default_pcf, base_default_parents = initialize_pcf(folder_setup.temp_to_be_referenced_dir)
+                else:
+                    timer.checkpoint(
+                        "preflight_particle_backups",
+                        required=False,
+                    )
             progress(0, "Installing addons...")
             timer.checkpoint("initialize")
 
@@ -295,7 +313,7 @@ class InstallService:
             if is_tf2 and not direct_game_files_reused:
                 with timer.measure("restore_skybox_files", "game VPK"):
                     restore_skybox_files(tf_path)
-                restore_particle_files(tf_path, profiler=timer)
+                apply_particle_restore(particle_restore_plan, profiler=timer)
                 with timer.measure("restore_paint_files", "game VPK"):
                     enable_paints(tf_path)
             timer.checkpoint("restore_game_files", reused=direct_game_files_reused)

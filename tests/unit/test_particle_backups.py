@@ -105,3 +105,29 @@ def test_verified_dynamic_backup_restores_a_modified_game_file(tmp_path, monkeyp
     assert FakeVPK.patches == [
         ("particles/seasonal.pcf", FakeVPK.expected_data, False)
     ]
+
+
+def test_restore_verifies_every_backup_before_patching_any_file(tmp_path, monkeypatch):
+    tf_path = _setup(tmp_path, monkeypatch, b"old bundled")
+    second_backup = pcf_handler.folder_setup.backup_dir / "particles" / "z-last.pcf"
+    second_backup.write_bytes(b"also old")
+
+    verified = iter(
+        (
+            b"first verified",
+            pcf_handler.ParticleBackupMismatchError("later backup is unsafe"),
+        )
+    )
+
+    def verify_or_raise(*_args):
+        result = next(verified)
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+    monkeypatch.setattr(pcf_handler, "_verified_particle_backup", verify_or_raise)
+
+    with pytest.raises(pcf_handler.ParticleBackupMismatchError, match="later backup"):
+        pcf_handler.restore_particle_files(tf_path)
+
+    assert FakeVPK.patches == []
