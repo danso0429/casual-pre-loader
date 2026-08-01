@@ -22,7 +22,8 @@ If you want a video supplement, please refer to the [**Video Supplement**](#vide
 1. **Prepare your mods. The preloader can handle all mods, even mods that aren't *'casual compatible',* so don't be afraid to use whatever you'd like! Once you have all the mods you want, set them aside.**
       - While you *can* put your hud in the preloader, it does the exact same thing as putting it in custom, so you don't have to if you don't want to.
       - Certain mods are either broken or outdated. I cannot guarantee that absolutely everything will work.
-2. **Open the preloader by running `RUNME.bat`, and follow the first-time set-up instructions that pop up.**
+2. **Open the preloader by running `RUNME.vbs`, and follow the first-time set-up instructions that pop up.**
+   - This launcher keeps the Python console hidden. Run `RUNME.bat` instead when you need to see startup errors.
       - The '*import*' tab can be ignored unless you're updating from a super old version of the preloader, or decided not to let the auto-updater update your preloader.
 3. **Once the preloader is open, drag and drop your mods anywhere over the window to import them.**
 

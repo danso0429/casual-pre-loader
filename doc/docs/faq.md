@@ -34,7 +34,7 @@ Most mods will work with this preloader, but heres a detailed list. If your mods
     * *(coming very soon)*
 
 ## How do I use this?
-Download the preloader, click RUNME.bat, then drag and drop your mods. From there just follow the on screen instructions. For a more in-depth tutorial, click **[here](tutorial.md)**. The tutorial includes a linux version as well.
+Download the preloader, click `RUNME.vbs`, then drag and drop your mods. From there just follow the on screen instructions. Use `RUNME.bat` instead if you need to see startup errors in a console. For a more in-depth tutorial, click **[here](tutorial.md)**. The tutorial includes a linux version as well.
 
 ## Troubleshooting
 For troubleshooting, please refer to **[this](troubleshooting.md)** page.
