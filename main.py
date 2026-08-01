@@ -8,9 +8,8 @@ from core.util.file import delete
 
 #TODO: move to `gui/` and reorganize
 def gui() -> int:
-    from PyQt6.QtCore import Qt
-    from PyQt6.QtGui import QIcon, QPixmap
-    from PyQt6.QtWidgets import QApplication, QMessageBox, QSplashScreen
+    from PyQt6.QtGui import QIcon
+    from PyQt6.QtWidgets import QApplication, QMessageBox
 
     from core.auto_updater import check_for_updates
     from core.backup_manager import prepare_runtime_environment
@@ -37,19 +36,6 @@ def gui() -> int:
     else:
         tf_dir = run_first_time_setup() # may exit
 
-    # splash screen
-    splash_pixmap = QPixmap(str(config.install_dir / 'gui/icons/cueki_splash.png'))
-    scaled_pixmap = splash_pixmap.scaled(
-        int(splash_pixmap.width() * 0.75),
-        int(splash_pixmap.height() * 0.75),
-        Qt.AspectRatioMode.KeepAspectRatio,
-        Qt.TransformationMode.SmoothTransformation
-    )
-    splash = QSplashScreen(scaled_pixmap)
-    splash.setWindowFlags(Qt.WindowType.WindowStaysOnTopHint |
-                          Qt.WindowType.FramelessWindowHint)
-    splash.show()
-
     window = ParticleManagerGUI(tf_dir)
 
     if config.update and settings.done_initial_setup:
@@ -57,9 +43,7 @@ def gui() -> int:
 
         # TODO: update this once we can update multiple at a time
         if updates and settings.should_show_update_dialog(updates[0].version):
-            splash.hide()
             show_update_dialog(updates) # NOTE: may eventually re-execute the interpreter
-            splash.show()
 
     # set icon for Windows
     if platform == 'win32':
@@ -72,7 +56,6 @@ def gui() -> int:
     else:
         logging.warning(f"We don't know how to set an icon for platform type: {platform}")
 
-    splash.finish(window)
     window.show()
 
     app.exec()
