@@ -22,13 +22,13 @@ from PyQt6.QtWidgets import (
 
 from core.download_mods import check_mods, download_mods
 from core.services.setup import (
-    import_userdata,
     is_valid_userdata_folder,
     save_initial_settings,
 )
 from core.util.sourcemod import auto_detect_sourcemod, validate_game_directory
 from core.version import DISPLAY_NAME
 from gui.theme import BUTTON_STYLE_ALT, FONT_SIZE_HEADER
+from gui.userdata_import_worker import UserdataImportWorker
 
 log = logging.getLogger()
 
@@ -46,6 +46,9 @@ class FirstTimeSetupDialog(QDialog):
         self.finish_button = None
         self.tf_directory = ""
         self.import_userdata_path = ""
+        self.setup_in_progress = False
+        self.import_worker = None
+        self.import_progress = None
 
         self.setWindowTitle("First Time Setup")
         self.setFixedSize(650, 580)
@@ -266,7 +269,12 @@ class FirstTimeSetupDialog(QDialog):
 
     def validate_setup(self):
         tf_valid = bool(self.tf_directory and Path(self.tf_directory).exists())
-        self.finish_button.setEnabled(tf_valid)
+        self.finish_button.setEnabled(tf_valid and not self.setup_in_progress)
+
+    def reject(self):
+        if self.setup_in_progress:
+            return
+        super().reject()
 
     def finish_setup(self):
         if not self.tf_directory:
@@ -278,17 +286,75 @@ class FirstTimeSetupDialog(QDialog):
             QMessageBox.warning(self, "Invalid Directory", "The selected TF2 directory is not valid.")
             return
 
-        # import userdata if provided
         if self.import_userdata_path:
-            success, warnings = import_userdata(Path(self.import_userdata_path))
-            if not success:
-                QMessageBox.warning(
-                    self, "Import Error",
-                    "Failed to import userdata:\n" + "\n".join(warnings)
-                    + "\n\nSetup will continue without importing."
-                )
-            elif warnings:
-                log.warning("Userdata import completed with warnings: %s", warnings)
+            self.start_userdata_import()
+            return
+
+        self.complete_setup()
+
+    def start_userdata_import(self):
+        self.setup_in_progress = True
+        self.finish_button.setEnabled(False)
+
+        self.import_progress = QProgressDialog(self)
+        self.import_progress.setWindowTitle("Importing Previous Userdata")
+        self.import_progress.setLabelText("Scanning previous userdata...")
+        self.import_progress.setCancelButton(None)
+        self.import_progress.setRange(0, 0)
+        self.import_progress.setMinimumDuration(0)
+        self.import_progress.setAutoClose(False)
+        self.import_progress.setAutoReset(False)
+        self.import_progress.setWindowModality(Qt.WindowModality.WindowModal)
+        self.import_progress.show()
+
+        self.import_worker = UserdataImportWorker(Path(self.import_userdata_path))
+        self.import_worker.progress_updated.connect(self.update_userdata_import_progress)
+        self.import_worker.finished.connect(self.finish_userdata_import)
+        self.import_worker.start()
+
+    def update_userdata_import_progress(self, completed: int, total: int, label: str):
+        if not self.import_progress:
+            return
+
+        if total <= 0:
+            self.import_progress.setRange(0, 0)
+            self.import_progress.setLabelText(label)
+            return
+
+        if self.import_progress.maximum() != total:
+            self.import_progress.setRange(0, total)
+        self.import_progress.setValue(min(completed, total))
+        self.import_progress.setLabelText(
+            f"{label}\n{completed:,} / {total:,} files"
+        )
+
+    def finish_userdata_import(self):
+        worker = self.import_worker
+        success, warnings = worker.result
+        worker.deleteLater()
+        self.import_worker = None
+
+        if self.import_progress:
+            self.import_progress.close()
+            self.import_progress.deleteLater()
+            self.import_progress = None
+
+        self.setup_in_progress = False
+
+        if not success:
+            QMessageBox.warning(
+                self, "Import Error",
+                "Failed to import userdata:\n" + "\n".join(warnings)
+                + "\n\nSetup will continue without importing."
+            )
+        elif warnings:
+            log.warning("Userdata import completed with warnings: %s", warnings)
+
+        self.complete_setup()
+
+    def complete_setup(self):
+        self.setup_in_progress = True
+        self.finish_button.setEnabled(False)
 
         # create or update app_settings.json (preserving any imported keys, overwriting tf_directory)
         success, error = save_initial_settings(Path(self.tf_directory))
