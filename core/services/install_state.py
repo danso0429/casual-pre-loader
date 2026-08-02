@@ -24,6 +24,7 @@ INSTALL_STATE_SCHEMA = 1
 INSTALL_RECIPE_VERSION = 2
 DIRECT_GAME_COMPATIBLE_RECIPE_UPGRADES = {(1, 2)}
 MAX_ADDON_SCAN_WORKERS = 8
+CONTENT_HASH_CHUNK_SIZE = 1024 * 1024
 
 
 @dataclass(frozen=True)
@@ -136,6 +137,20 @@ def _file_entry(path: Path, label: str) -> list:
     except OSError:
         return [label, "missing"]
     return [label, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns]
+
+
+def _content_file_entry(path: Path, label: str) -> list:
+    """Capture portable file identity for application-bundled inputs."""
+    digest = hashlib.sha256()
+    size = 0
+    try:
+        with path.open("rb") as file:
+            while chunk := file.read(CONTENT_HASH_CHUNK_SIZE):
+                digest.update(chunk)
+                size += len(chunk)
+    except OSError:
+        return [label, "missing"]
+    return [label, size, digest.hexdigest()]
 
 
 def _inventory_file_entry(file: AddonInventoryFile, label: str) -> list:
@@ -271,6 +286,7 @@ def _tree_entries(
     root: Path,
     label: str,
     include: Callable[[Path], bool] | None = None,
+    file_entry: Callable[[Path, str], list] = _file_entry,
 ) -> list[list]:
     if not root.is_dir():
         return [[label, "missing"]]
@@ -281,7 +297,7 @@ def _tree_entries(
         if not path.is_file() or (include is not None and not include(path)):
             continue
         relative = path.relative_to(root).as_posix()
-        entries.append(_file_entry(path, f"{label}/{relative}"))
+        entries.append(file_entry(path, f"{label}/{relative}"))
     return entries
 
 
@@ -439,6 +455,7 @@ def capture_direct_game_inputs(
             folder_setup.install_dir / "backup" / "particles",
             "bundled_backup/particles",
             lambda path: path.suffix.casefold() == ".pcf",
+            _content_file_entry,
         )
     )
     entries.extend(
@@ -446,6 +463,7 @@ def capture_direct_game_inputs(
             folder_setup.install_dir / "backup" / "materials" / "skybox",
             "bundled_backup/materials/skybox",
             lambda path: path.suffix.casefold() == ".vmt",
+            _content_file_entry,
         )
     )
     entries.extend(
@@ -456,7 +474,10 @@ def capture_direct_game_inputs(
         )
     )
     entries.append(
-        _file_entry(folder_setup.particle_system_map_file, "particle_system_map.json")
+        _content_file_entry(
+            folder_setup.particle_system_map_file,
+            "particle_system_map.json",
+        )
     )
     return entries
 
