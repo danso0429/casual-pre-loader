@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 from pathlib import Path
 from types import SimpleNamespace
@@ -6,6 +7,7 @@ from unittest.mock import Mock
 
 from core.services import install as install_service
 from core.services import install_state
+from core.services import personal_state_compat
 from core.services.install_state import InstallStateStore, make_request_header
 
 
@@ -63,6 +65,36 @@ def _setup_files(tmp_path: Path, monkeypatch):
         ),
     )
     return tf_path
+
+
+def _convert_saved_state_to_personal6_legacy(store, monkeypatch):
+    saved = json.loads(store.path.read_text(encoding="utf-8"))
+    target = next(iter(saved["targets"].values()))
+    current_entries = target["direct_game_inputs"]
+    legacy_entries = []
+    for entry in current_entries:
+        if (
+            personal_state_compat.is_bundled_input_entry(entry)
+            and len(entry) == 3
+            and isinstance(entry[1], int)
+        ):
+            legacy_entries.append([entry[0], entry[1], 1_000, 2_000])
+        else:
+            legacy_entries.append(entry)
+
+    identity = personal_state_compat.LegacyBundleIdentity(
+        shape_sha256=personal_state_compat.bundled_shape_digest(legacy_entries),
+        content_sha256=personal_state_compat.bundled_content_digest(current_entries),
+    )
+    monkeypatch.setitem(
+        personal_state_compat.LEGACY_BUNDLE_IDENTITIES,
+        "2.2.4+personal.6",
+        identity,
+    )
+    target["request"]["app_version"] = "2.2.4+personal.6"
+    target["direct_game_inputs"] = legacy_entries
+    store.path.write_text(json.dumps(saved), encoding="utf-8")
+    return current_entries
 
 
 def test_saved_install_state_recognizes_an_unchanged_install(tmp_path, monkeypatch):
@@ -146,6 +178,69 @@ def test_bundled_inputs_use_content_identity_across_timestamp_changes(
     assert store.evaluate(tf_path, request, ["addon"], selections)[1] == (
         "direct_game_inputs_changed"
     )
+
+
+def test_personal6_legacy_bundle_identity_is_migrated_without_reinstall(
+    tmp_path,
+    monkeypatch,
+    caplog,
+):
+    caplog.set_level(logging.INFO)
+    tf_path = _setup_files(tmp_path, monkeypatch)
+    store = InstallStateStore(tmp_path / "state" / "install_state.json")
+    request = _request()
+    selections = {"particle": "particle_mod"}
+    store.save_current(tf_path, request, ["addon"], selections)
+    current_entries = _convert_saved_state_to_personal6_legacy(store, monkeypatch)
+    personal7_request = {**request, "app_version": "2.2.4+personal.7"}
+
+    assert store.can_reuse_direct_game_files(
+        tf_path,
+        personal7_request,
+        ["addon"],
+        selections,
+        False,
+    )
+    assert store.evaluate(
+        tf_path,
+        personal7_request,
+        ["addon"],
+        selections,
+    ) == (True, "up_to_date")
+
+    migrated = json.loads(store.path.read_text(encoding="utf-8"))
+    migrated_target = next(iter(migrated["targets"].values()))
+    assert migrated_target["request"]["app_version"] == "2.2.4+personal.7"
+    assert migrated_target["direct_game_inputs"] == current_entries
+    assert "Migrated legacy bundled input identity" in caplog.text
+
+
+def test_personal6_legacy_migration_rejects_changed_bundled_content(
+    tmp_path,
+    monkeypatch,
+):
+    tf_path = _setup_files(tmp_path, monkeypatch)
+    store = InstallStateStore(tmp_path / "state" / "install_state.json")
+    request = _request()
+    selections = {"particle": "particle_mod"}
+    store.save_current(tf_path, request, ["addon"], selections)
+    _convert_saved_state_to_personal6_legacy(store, monkeypatch)
+
+    bundled_particle = (
+        install_state.folder_setup.install_dir
+        / "backup"
+        / "particles"
+        / "base.pcf"
+    )
+    bundled_particle.write_bytes(b"BASE")
+    personal7_request = {**request, "app_version": "2.2.4+personal.7"}
+
+    assert store.evaluate(
+        tf_path,
+        personal7_request,
+        ["addon"],
+        selections,
+    )[1] == "direct_game_inputs_changed"
 
 
 def test_captured_install_inputs_reuse_one_addon_inventory(tmp_path, monkeypatch):
