@@ -1,3 +1,5 @@
+import atexit
+import shutil
 import sys
 import tempfile
 from pathlib import Path
@@ -13,6 +15,7 @@ import core.config  # noqa: E402
 
 # keep userdata written during tests out of the source tree
 _test_userdata_dir = Path(tempfile.mkdtemp(prefix='casual-pre-loader-tests-'))
+atexit.register(shutil.rmtree, _test_userdata_dir, ignore_errors=True)
 type(core.config.config).project_dir = _test_userdata_dir / 'data'
 type(core.config.config).settings_dir = _test_userdata_dir / 'config'
 type(core.config.config).temp_dir = _test_userdata_dir / 'temp'
