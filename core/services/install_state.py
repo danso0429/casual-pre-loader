@@ -21,8 +21,8 @@ if TYPE_CHECKING:
     from core.util.perf import StageTimer
 
 INSTALL_STATE_SCHEMA = 1
-INSTALL_RECIPE_VERSION = 2
-DIRECT_GAME_COMPATIBLE_RECIPE_UPGRADES = {(1, 2)}
+INSTALL_RECIPE_VERSION = 3
+DIRECT_GAME_COMPATIBLE_RECIPE_UPGRADES = {(1, 2), (1, 3), (2, 3)}
 MAX_ADDON_SCAN_WORKERS = 8
 CONTENT_HASH_CHUNK_SIZE = 1024 * 1024
 
@@ -450,27 +450,22 @@ def capture_direct_game_inputs(
             )
         )
 
+    # every bundled backup file can reach the install output (particles,
+    # skybox materials, sound scripts, resource files), so track all of them
     entries.extend(
         _tree_entries(
-            config.install_dir / "backup" / "particles",
-            "bundled_backup/particles",
-            lambda path: path.suffix.casefold() == ".pcf",
-            _content_file_entry,
+            config.install_dir / "backup",
+            "bundled_backup",
+            file_entry=_content_file_entry,
         )
     )
-    entries.extend(
-        _tree_entries(
-            config.install_dir / "backup" / "materials" / "skybox",
-            "bundled_backup/materials/skybox",
-            lambda path: path.suffix.casefold() == ".vmt",
-            _content_file_entry,
-        )
-    )
+    # the runtime copy is recreated with fresh timestamps on every startup
     entries.extend(
         _tree_entries(
             config.backup_dir / "particles",
             "runtime_backup/particles",
             lambda path: path.suffix.casefold() == ".pcf",
+            _content_file_entry,
         )
     )
     entries.append(

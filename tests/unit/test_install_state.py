@@ -123,6 +123,7 @@ def test_bundled_inputs_use_content_identity_across_timestamp_changes(
         / "base.pcf"
     )
     particle_map = install_state.config.particle_system_map_file
+    runtime_particle = install_state.config.backup_dir / "particles" / "base.pcf"
 
     store.save_current(tf_path, request, ["addon"], selections)
     saved = json.loads(store.path.read_text(encoding="utf-8"))
@@ -135,7 +136,8 @@ def test_bundled_inputs_use_content_identity_across_timestamp_changes(
     assert bundled_entry[:2] == ["bundled_backup/particles/base.pcf", 4]
     assert len(bundled_entry[2]) == 64
 
-    for path in (bundled_particle, particle_map):
+    # startup recreates the runtime backup copy with new timestamps
+    for path in (bundled_particle, particle_map, runtime_particle):
         stat = path.stat()
         os.utime(path, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000_000))
 
@@ -148,6 +150,34 @@ def test_bundled_inputs_use_content_identity_across_timestamp_changes(
     assert store.evaluate(tf_path, request, ["addon"], selections)[1] == (
         "direct_game_inputs_changed"
     )
+
+
+def test_bundled_resource_changes_require_reinstall(tmp_path, monkeypatch):
+    tf_path = _setup_files(tmp_path, monkeypatch)
+    store = InstallStateStore(tmp_path / "state" / "install_state.json")
+    request = _request()
+    selections = {"particle": "particle_mod"}
+    resource = install_state.config.install_dir / "backup" / "resource" / "ui" / "maps.res"
+    resource.parent.mkdir(parents=True)
+    resource.write_bytes(b"maps")
+
+    store.save_current(tf_path, request, ["addon"], selections)
+    assert store.evaluate(tf_path, request, ["addon"], selections)[1] == "up_to_date"
+
+    resource.unlink()
+    assert store.evaluate(tf_path, request, ["addon"], selections)[1] == (
+        "direct_game_inputs_changed"
+    )
+
+
+def test_previous_recipe_requires_reinstall(tmp_path, monkeypatch):
+    tf_path = _setup_files(tmp_path, monkeypatch)
+    store = InstallStateStore(tmp_path / "state" / "install_state.json")
+    request = _request()
+    selections = {"particle": "particle_mod"}
+    store.save_current(tf_path, {**request, "recipe": 2}, ["addon"], selections)
+
+    assert store.evaluate(tf_path, request, ["addon"], selections)[1] == "request_changed"
 
 
 def test_captured_install_inputs_reuse_one_addon_inventory(tmp_path, monkeypatch):
