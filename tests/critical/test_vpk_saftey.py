@@ -149,11 +149,9 @@ class TestVPKSafety:
         if backup_particles.exists():
             shutil.rmtree(backup_particles)
 
-        result = restore_particle_files(str(temp_vpk_file.parent))
-        # count should be 0 because the dir is empty
-        assert result == 0, "Should not attempt restoration when backup files missing"
+        original_vpk = temp_vpk_file.read_bytes()
 
-        # test with Path.exists returning False globally
-        with patch('pathlib.Path.exists', return_value=False):
-            result = restore_particle_files(str(temp_vpk_file.parent))
-            assert result == 0, "Operations should fail gracefully when backup directory missing"
+        # a missing backup directory is an error, and nothing may be written
+        with pytest.raises(FileNotFoundError):
+            restore_particle_files(temp_vpk_file.parent)
+        assert temp_vpk_file.read_bytes() == original_vpk, "VPK must not change when backup files are missing"
