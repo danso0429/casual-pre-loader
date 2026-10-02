@@ -12,10 +12,6 @@ from typing import TYPE_CHECKING, Callable
 
 from core.config import config
 from core.constants import BACKUP_MAINMENU_FOLDER, CUSTOM_VPK_NAME, Sourcemods
-from core.services.personal_state_compat import (
-    is_bundled_input_entry,
-    legacy_bundled_inputs_are_compatible,
-)
 from core.util.vpk import get_vpk_name
 from core.version import VERSION
 
@@ -108,39 +104,6 @@ def _direct_game_recipes_are_compatible(previous: dict, current: dict) -> bool:
         previous_recipe,
         current_recipe,
     ) in DIRECT_GAME_COMPATIBLE_RECIPE_UPGRADES
-
-
-def _direct_game_inputs_match(
-    previous: object,
-    current: object,
-    previous_request: object,
-) -> tuple[bool, bool]:
-    """Return whether direct inputs match and whether legacy identity was used."""
-    if _stable_file_entries_match(previous, current):
-        return True, False
-    if not isinstance(previous_request, dict):
-        return False, False
-    if not legacy_bundled_inputs_are_compatible(
-        previous_request.get("app_version"),
-        previous,
-        current,
-    ):
-        return False, False
-
-    previous_non_bundled = [
-        entry
-        for entry in previous
-        if not is_bundled_input_entry(entry)
-    ]
-    current_non_bundled = [
-        entry
-        for entry in current
-        if not is_bundled_input_entry(entry)
-    ]
-    return (
-        _stable_file_entries_match(previous_non_bundled, current_non_bundled),
-        True,
-    )
 
 
 def make_request_header(
@@ -651,26 +614,15 @@ class InstallStateStore:
         if target.get("outputs") != managed_outputs:
             return False, "managed_outputs_changed"
         if request_header.get("sourcemod") == Sourcemods.TF2.name:
-            direct_inputs_match, legacy_identity_used = _direct_game_inputs_match(
+            if not _stable_file_entries_match(
                 target.get("direct_game_inputs"),
                 captured_inputs.direct_game_inputs,
-                target.get("request"),
-            )
-            if not direct_inputs_match:
+            ):
                 return False, "direct_game_inputs_changed"
             with _measure(profiler, "state_direct_output", "game VPK"):
                 direct_game_output = capture_direct_game_output(tf_path)
             if target.get("direct_game_output") != direct_game_output:
                 return False, "direct_game_output_changed"
-            if legacy_identity_used:
-                target["direct_game_inputs"] = captured_inputs.direct_game_inputs
-                target["request"]["app_version"] = request_header.get("app_version")
-                with _measure(profiler, "state_write", "install_state.json migration"):
-                    self._write(state)
-                log.info(
-                    "Migrated legacy bundled input identity app_version=%s",
-                    request_header.get("app_version"),
-                )
         return True, "up_to_date"
 
     def reusable_external_custom_paths(
@@ -768,12 +720,10 @@ class InstallStateStore:
                 profiler=profiler,
             )
 
-        direct_inputs_match, _legacy_identity_used = _direct_game_inputs_match(
+        return _stable_file_entries_match(
             target.get("direct_game_inputs"),
             captured_inputs.direct_game_inputs,
-            previous_request,
-        )
-        return direct_inputs_match and (
+        ) and (
             target.get("direct_game_output") == capture_direct_game_output(tf_path)
         )
 
