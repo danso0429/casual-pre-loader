@@ -26,6 +26,7 @@ from urllib3.exceptions import NameResolutionError
 
 from core.constants import Sourcemods
 from core.download_mods import check_mods, download_mods
+from core.services.recovery_backup import find_recovery_backup
 from core.services.setup import is_valid_userdata_folder
 from core.settings import settings
 from core.util.sourcemod import (
@@ -292,6 +293,16 @@ class FirstTimeSetupDialog(QDialog):
         if not validate_game_directory(self.tf_directory):
             QMessageBox.warning(self, "Invalid Directory", "The selected TF2 directory is not valid.")
             return
+
+        if not self.import_userdata_path:
+            recovery_dir = find_recovery_backup(self.tf_directory)
+            if recovery_dir is not None and QMessageBox.question(
+                self,
+                "Restore Previous Mods",
+                "This game folder has a recovery copy of the mods, load order and settings "
+                f"from a previous installation:\n{recovery_dir}\n\nRestore it?",
+            ) == QMessageBox.StandardButton.Yes:
+                self.import_userdata_path = recovery_dir
 
         if self.import_userdata_path:
             self.start_userdata_import()

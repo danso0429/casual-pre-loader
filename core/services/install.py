@@ -39,6 +39,7 @@ from core.services.install_state import (
     capture_install_inputs,
     make_request_header,
 )
+from core.services.recovery_backup import sync_recovery_backup
 from core.operations.file_processors import (
     check_game_type,
     game_type,
@@ -110,6 +111,14 @@ class InstallService:
             return False
         gameinfo_path = tf_path / 'gameinfo.txt'
         return check_game_type(gameinfo_path) if gameinfo_path.is_file() else False
+
+    @staticmethod
+    def _save_recovery_backup(tf_path: Path) -> None:
+        # the install itself already succeeded, so a failed copy is only logged
+        try:
+            sync_recovery_backup(tf_path)
+        except Exception:
+            log.exception(f"Failed to save recovery backup to {tf_path}")
 
     @staticmethod
     def cleanup_huds(custom_dir: Path) -> None:
@@ -269,6 +278,8 @@ class InstallService:
             timer.checkpoint("check_install_state")
             log.info("Install state result=%s", reason)
             if is_current:
+                self._save_recovery_backup(tf_path)
+                timer.checkpoint("save_recovery_backup")
                 progress(100, "Mods are already up to date")
                 timer.finish()
                 return False
@@ -760,6 +771,10 @@ class InstallService:
                     captured_inputs=save_inputs,
                 )
                 timer.checkpoint("save_install_state")
+
+            progress(98, "Saving recovery copy...")
+            self._save_recovery_backup(tf_path)
+            timer.checkpoint("save_recovery_backup")
 
             progress(100, "Installation complete")
             return True
