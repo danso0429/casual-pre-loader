@@ -1,10 +1,21 @@
+import sys
 import tempfile
 from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
 
-import core.config
+# core.config parses sys.argv with cappa on first access; keep pytest's own
+# arguments away from the application CLI parser.
+sys.argv = [sys.argv[0]]
+
+import core.config  # noqa: E402
+
+# keep userdata written during tests out of the source tree
+_test_userdata_dir = Path(tempfile.mkdtemp(prefix='casual-pre-loader-tests-'))
+type(core.config.config).project_dir = _test_userdata_dir / 'data'
+type(core.config.config).settings_dir = _test_userdata_dir / 'config'
+type(core.config.config).temp_dir = _test_userdata_dir / 'temp'
 
 
 @pytest.fixture(scope="session")
